@@ -1,18 +1,31 @@
-//! Claim persistence and the contradiction engine.
+//! Claim persistence and the contradiction engine (v0.2 evidence layer).
 //!
-//! Claims are extracted deterministically (see `knowledge::extract_claims`) and
-//! persisted here with provenance. The contradiction engine detects numeric
-//! disagreements between claims sharing a (subject_key, predicate_key):
-//! e.g. "Acme revenue $10M" vs "Acme revenue $12M". Conflicts are *preserved*,
-//! never silently merged (the engine keeps disagreement with sources+dates).
+//! Claims are extracted deterministically (see `knowledge::extract_claims`)
+//! and persisted here with provenance *including character offsets*. The
+//! contradiction engine compares claims sharing a (subject_key, predicate_key)
+//! after unit/magnitude normalization ("$10 million" ≡ "10M" ≡ 10_000_000).
+//!
+//! Conflict taxonomy (preserved, never silently merged):
+//! - `same-period-disagreement` — same metric, same validity period, >5% delta.
+//! - `cross-period` — same metric, different validity periods (often NOT an
+//!   error: revenue changes over time; surfaced for context).
+//! - `undated-disagreement` — no periods parseable.
+//! - `negation-conflict` — one source asserts, another negates.
+//!
+//! Detection cost is O(log N + K) via the `(subject_key, predicate_key)`
+//! index — v0.1 rescanned every numeric claim per insert (O(N²)).
 
 use crate::error::Result;
 use crate::storage::dao;
 use rusqlite::Connection;
 
+/// Relative numeric delta above which two claims of the same metric are
+/// considered to disagree (5% — configurable per deployment later).
+pub const CONFLICT_DELTA_THRESHOLD: f32 = 0.05;
+
 /// Persist extracted claims for one chunk + run conflict detection against
-/// previously stored numeric claims. Returns number of claims stored and
-/// number of conflicts (new) detected.
+/// prior claims with identical (subject_key, predicate_key). Returns number
+/// of claims stored and number of new conflicts detected.
 pub fn persist_claims(
     conn: &Connection,
     document_id: i64,
@@ -39,6 +52,8 @@ pub fn persist_claims(
             &predicate_key,
             claim.valid_from.as_deref(),
             claim.valid_until.as_deref(),
+            Some(claim.start_offset as i64),
+            Some(claim.end_offset as i64),
         )?;
         dao::insert_provenance(
             conn,
@@ -46,67 +61,113 @@ pub fn persist_claims(
             &claim_id.to_string(),
             Some(document_id),
             Some(chunk_id),
-            None,
+            Some((claim.start_offset as i64, claim.end_offset as i64)),
             crate::knowledge::CLAIM_EXTRACTOR,
             crate::knowledge::KNOWLEDGE_VERSION,
         )?;
         stored += 1;
 
-        // Numeric conflict detection against existing claims with same keys.
-        if let Some(value) = dao::parse_first_number(&claim.object) {
-            let existing = dao::numeric_claims(conn)?;
-            for (other_id, os, op, ovalue, oyear, odoc) in existing {
-                if other_id == claim_id || os != subject_key || op != predicate_key {
+        // Negation conflicts: same subject+predicate, opposite polarity.
+        if claim.negated {
+            let existing = dao::claims_for_subject(conn, &subject_key)?;
+            for other in &existing {
+                if other.id == claim_id || other.predicate.to_lowercase() != predicate_key {
                     continue;
                 }
-                if ovalue <= 0.0 || value <= 0.0 {
-                    continue;
-                }
-                let delta = ((value - ovalue).abs()) / ovalue.max(value);
-                if delta > 0.05 {
-                    // Temporal explanation if periods differ.
-                    let this_year = claim
-                        .valid_from
-                        .as_deref()
-                        .map(|s| s[..4.min(s.len())].to_string());
-                    let other_year = oyear
-                        .as_deref()
-                        .map(|s| s[..4.min(s.len())].to_string());
-                    let explanation = match (&this_year, &other_year) {
-                        (Some(a), Some(b)) if a == b => format!(
-                            "same metric differs by {:.0}% within the same period ({a}); disagreement preserved",
-                            delta * 100.0
-                        ),
-                        (Some(a), Some(b)) => format!(
-                            "same metric differs by {:.0}% across periods: {a} vs {b}",
-                            delta * 100.0
-                        ),
-                        _ => format!(
-                            "same metric differs by {:.0}% between documents {} and {}",
-                            delta * 100.0,
-                            odoc,
-                            document_id
-                        ),
-                    };
-                    // Avoid duplicate conflicts for the same pair.
-                    let dup: bool = conflicts_pair_exists(conn, claim_id, other_id)?;
+                let other_negated = sentence_is_negative(&other.sentence);
+                if !other_negated && !other.object.is_empty() {
+                    let dup = conflicts_pair_exists(conn, claim_id, other.id)?;
                     if !dup {
                         dao::insert_conflict(
                             conn,
                             &subject_key,
                             &predicate_key,
-                            other_id,
+                            other.id,
                             claim_id,
-                            delta as f32,
-                            &explanation,
+                            1.0,
+                            "one source asserts, another negates the same predicate; disagreement preserved",
+                            "negation-conflict",
                         )?;
                         new_conflicts += 1;
                     }
                 }
             }
+            continue;
+        }
+
+        // Numeric conflict detection against prior claims with the same keys.
+        let Some(value) = dao::parse_first_number(&claim.object) else {
+            continue;
+        };
+        if value <= 0.0 {
+            continue;
+        }
+        let existing = dao::numeric_claims_for_keys(conn, &subject_key, &predicate_key)?;
+        for (other_id, ovalue, oyear) in existing {
+            if other_id == claim_id || ovalue <= 0.0 {
+                continue;
+            }
+            let delta = ((value - ovalue).abs()) / ovalue.max(value);
+            if delta <= CONFLICT_DELTA_THRESHOLD as f64 {
+                continue;
+            }
+            let this_year = claim
+                .valid_from
+                .as_deref()
+                .map(|s| s[..4.min(s.len())].to_string());
+            let other_year = oyear.as_deref().map(|s| s[..4.min(s.len())].to_string());
+            let (explanation, kind) = match (&this_year, &other_year) {
+                (Some(a), Some(b)) if a == b => (
+                    format!(
+                        "same metric differs by {:.0}% within the same period ({a}); disagreement preserved",
+                        delta * 100.0
+                    ),
+                    "same-period-disagreement",
+                ),
+                (Some(a), Some(b)) => (
+                    format!(
+                        "same metric differs by {:.0}% across periods: {a} vs {b}",
+                        delta * 100.0
+                    ),
+                    "cross-period",
+                ),
+                _ => (
+                    format!(
+                        "same metric differs by {:.0}% between sources; no validity periods parseable",
+                        delta * 100.0
+                    ),
+                    "undated-disagreement",
+                ),
+            };
+            let dup = conflicts_pair_exists(conn, claim_id, other_id)?;
+            if !dup {
+                dao::insert_conflict(
+                    conn,
+                    &subject_key,
+                    &predicate_key,
+                    other_id,
+                    claim_id,
+                    delta as f32,
+                    &explanation,
+                    kind,
+                )?;
+                new_conflicts += 1;
+            }
         }
     }
     Ok((stored, new_conflicts))
+}
+
+/// Heuristic: does a sentence negate its predicate?
+pub fn sentence_is_negative(sentence: &str) -> bool {
+    let lower = sentence.to_lowercase();
+    for w in [" not ", "n't ", " never ", " no longer ", " without "] {
+        if lower.contains(w) {
+            return true;
+        }
+    }
+    // Sentence-final / contraction-adjacent forms ("is not", "wasn't").
+    lower.contains("n't") || lower.contains("not")
 }
 
 fn conflicts_pair_exists(conn: &Connection, a: i64, b: i64) -> Result<bool> {

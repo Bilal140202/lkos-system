@@ -1,9 +1,9 @@
 [package]
 name = "lkos"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2021"
 rust-version = "1.75"
-description = "LKOS — Local Knowledge Object System: an offline, privacy-first hybrid retrieval and knowledge engine (SQLite + FTS5 + embeddings + RRF + entities + claims + provenance)"
+description = "LKOS — Local Knowledge Object System: an offline, privacy-first hybrid retrieval and knowledge engine (SQLite + FTS5 + semantic embeddings + RRF + entity resolution + claims + provenance)"
 license = "MIT"
 repository = "https://github.com/Bilal140202/lkos-system"
 readme = "README.md"
@@ -30,6 +30,14 @@ thiserror = "2"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 regex = "1"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+pdf-extract = { version = "0.7", optional = true }
+
+[features]
+default = []
+# Optional local PDF text extraction (pure Rust). Disabled by default so the
+# core engine stays dependency-light; enable with `--features pdf`.
+pdf = ["pdf-extract"]
 
 [dev-dependencies]
 tempfile = "3"

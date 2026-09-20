@@ -209,3 +209,47 @@ CREATE TABLE IF NOT EXISTS engine_meta (
 
 COMMIT;
 "#;
+
+/// v5 — semantic model storage, per-chunk embedding lineage, claim offsets,
+/// conflict-detection indexes, job scheduling columns, entity merge audit.
+pub const V5_SEMANTIC_INCREMENTAL: &str = r#"
+BEGIN;
+
+-- Latent term vectors of the corpus-trained LSA model.
+CREATE TABLE IF NOT EXISTS lsa_terms (
+    term   TEXT PRIMARY KEY,
+    idx    INTEGER NOT NULL,
+    vector BLOB NOT NULL
+);
+
+-- Which embedding model produced each chunk's vector. NULL on legacy rows
+-- (v0.1 data was hashing-lex-v1); backfilled immediately after migration.
+ALTER TABLE chunks ADD COLUMN embedding_model TEXT;
+UPDATE chunks SET embedding_model = 'hashing-lex-v1' WHERE embedding_model IS NULL;
+CREATE INDEX IF NOT EXISTS idx_chunks_model ON chunks(embedding_model);
+
+-- Character offsets of the claim's source sentence span within its chunk.
+ALTER TABLE claims ADD COLUMN start_offset INTEGER;
+ALTER TABLE claims ADD COLUMN end_offset INTEGER;
+
+-- Conflict detection needs (subject_key, predicate_key) lookups, not scans.
+CREATE INDEX IF NOT EXISTS idx_claims_keys ON claims(subject_key, predicate_key);
+CREATE INDEX IF NOT EXISTS idx_conflicts_keys ON claim_conflicts(subject_key, predicate_key);
+ALTER TABLE claim_conflicts ADD COLUMN conflict_kind TEXT NOT NULL DEFAULT 'undated-disagreement';
+
+-- Job scheduling: exponential backoff release time + progress percentage.
+ALTER TABLE jobs ADD COLUMN run_at TEXT;
+ALTER TABLE jobs ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_jobs_sched ON jobs(status, priority, run_at);
+
+-- Entity merge audit trail (resolution transparency is part of the contract).
+CREATE TABLE IF NOT EXISTS entity_merge_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    survivor_id  INTEGER NOT NULL,
+    merged_id    INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    merged_at    TEXT NOT NULL
+);
+
+COMMIT;
+"#;

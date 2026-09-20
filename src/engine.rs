@@ -14,7 +14,7 @@
 
 use crate::chunking;
 use crate::config::Config;
-use crate::embeddings::{EmbeddingProvider, HashingEmbedder};
+use crate::embeddings::{EmbeddingProvider, HashingEmbedder, LsaEmbedder};
 use crate::error::{LkosError, Result};
 use crate::events::EventBus;
 use crate::ingestion;
@@ -35,11 +35,15 @@ pub struct Lkos {
 struct Inner {
     path: std::path::PathBuf,
     config: Config,
-    embedder: Box<dyn EmbeddingProvider>,
+    embedder: Arc<dyn EmbeddingProvider>,
+    /// Present when `embedding_provider = "lsa"` (dual-mode provider).
+    lsa: Option<Arc<LsaEmbedder>>,
     bus: EventBus,
     llm: RwLock<Option<Arc<dyn LlmProvider>>>,
-    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
+    /// Directory to remove on close (in-memory scratch), if any.
+    scratch_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for Lkos {
@@ -59,30 +63,50 @@ impl Lkos {
     /// Open (creating if needed) a knowledge base at `path` with `config`.
     pub fn open(path: impl AsRef<std::path::Path>, config: Config) -> Result<Lkos> {
         let path = path.as_ref().to_path_buf();
+        let lsa = if config.embedding_provider == "lsa" {
+            Some(Arc::new(LsaEmbedder::new(config.embedding_dim)))
+        } else {
+            None
+        };
+        let embedder: Arc<dyn EmbeddingProvider> = match &lsa {
+            Some(l) => l.clone(),
+            None => Arc::new(HashingEmbedder::new(config.embedding_dim)),
+        };
         {
             let store = Store::open(&path)?;
             // Record / verify embedding model identity.
             let meta_model = dao::meta_get(store.read(), "embedding_model")?;
             match meta_model {
                 None => {
-                    dao::meta_set(store.read(), "embedding_model", "hashing-lex-v1")?;
+                    dao::meta_set(store.read(), "embedding_model", &embedder.name())?;
                     dao::meta_set(
                         store.read(),
                         "embedding_dim",
-                        &config.embedding_dim.to_string(),
+                        &embedder.dim().to_string(),
                     )?;
                 }
-                Some(_m) => {
-                    // Hashing embedder is the only built-in; dimension is the check.
+                Some(m) => {
+                    // A trained LSA model restores the semantic space; without
+                    // it the provider falls back to hashing — mismatch against
+                    // an LSA-built index is a hard error (reindex required).
+                    if let Some(l) = &lsa {
+                        if let Some(model) = crate::embeddings::lsa::load_model(store.read())? {
+                            l.install_model(model);
+                        }
+                    }
+                    let active = match (&lsa, lsa.as_ref().map(|l| l.is_trained())) {
+                        (Some(_), Some(true)) => "lsa-pmi-svd-v1",
+                        _ => "hashing-lex-v1",
+                    };
                     let meta_dim: usize = dao::meta_get(store.read(), "embedding_dim")?
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(config.embedding_dim);
-                    if meta_dim != config.embedding_dim {
+                    if m != active || meta_dim != embedder.dim() {
                         return Err(LkosError::EmbeddingMismatch {
-                            index_model: _m,
+                            index_model: m,
                             index_dim: meta_dim,
-                            provider_model: "hashing-lex-v1".into(),
-                            provider_dim: config.embedding_dim,
+                            provider_model: embedder.name().to_string(),
+                            provider_dim: embedder.dim(),
                         });
                     }
                 }
@@ -101,26 +125,37 @@ impl Lkos {
             inner: Arc::new(Inner {
                 path,
                 config,
-                embedder: Box::new(HashingEmbedder::new(256)),
+                embedder,
+                lsa,
                 bus: EventBus::new(),
                 llm: RwLock::new(None),
-                worker: Mutex::new(None),
+                workers: Mutex::new(Vec::new()),
                 shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                scratch_dir: None,
             }),
         };
         if !engine.inner.config.synchronous_ingestion {
-            engine.start_worker();
+            engine.start_workers();
         }
         Ok(engine)
     }
 
-    /// Open with an in-memory database (tests/examples).
+    /// Open with an in-memory-backed scratch database (tests/examples).
+    /// The scratch directory is removed on [`Lkos::close`].
     pub fn open_in_memory(config: Config) -> Result<Lkos> {
-        // Route through the file-based path with a temp file for API symmetry.
         let dir = std::env::temp_dir().join(format!("lkos-mem-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("mem-{}.lkos", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
-        Self::open(path, config)
+        let path = dir.join(format!(
+            "mem-{}.lkos",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let mut engine = Self::open(path, config)?;
+        // Shared inner state: patch the scratch dir through Arc::get_mut.
+        // (open_in_memory is only used before clones exist.)
+        if let Some(inner) = Arc::get_mut(&mut engine.inner) {
+            inner.scratch_dir = Some(dir);
+        }
+        Ok(engine)
     }
 
     /// Install an LLM provider (optional capability).
@@ -147,10 +182,17 @@ impl Lkos {
         self.inner
             .shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Ok(mut w) = self.inner.worker.lock() {
-            if let Some(handle) = w.take() {
+        if let Ok(mut w) = self.inner.workers.lock() {
+            for handle in w.drain(..) {
                 let _ = handle.join();
             }
+        }
+        // Cancel any jobs still queued (workers are gone).
+        if let Ok(mut store) = Store::open(&self.inner.path) {
+            let _ = crate::jobs::cancel_pending(store.conn());
+        }
+        if let Some(dir) = &self.inner.scratch_dir {
+            let _ = std::fs::remove_dir_all(dir);
         }
         Ok(())
     }
@@ -220,7 +262,7 @@ impl Lkos {
             extracted.text.len(),
             ingestion::EXTRACTOR_VERSION,
             chunking::CHUNKER_VERSION,
-            self.inner.embedder.name(),
+            &self.inner.embedder.name(),
             crate::knowledge::KNOWLEDGE_VERSION,
         )?;
         if created {
@@ -310,6 +352,7 @@ impl Lkos {
                 store.conn(),
                 cid,
                 &emb_bytes,
+                &self.inner.embedder.name(),
                 &crate::knowledge::ko_to_json(&ko),
             )?;
             dao::insert_provenance(
@@ -438,6 +481,7 @@ impl Lkos {
     // ------------------------------------------------------------------
 
     /// Full query path: plan → retrieve → assemble → explain.
+    #[allow(clippy::too_many_lines)]
     pub fn query(&self, req: QueryRequest) -> Result<QueryResponse> {
         let started = Instant::now();
         if req.text.trim().is_empty() {
@@ -447,14 +491,27 @@ impl Lkos {
         let cfg = &self.inner.config;
         let plan = crate::query::plan(&req, cfg);
 
-        // Known entities present in the query text.
-        let lower_q = req.text.to_lowercase();
-        let all_ents = dao::all_entities_min(store.read())?;
-        let known_entities: Vec<(String, i64)> = all_ents
-            .into_iter()
-            .filter(|(name, _)| name.len() > 2 && lower_q.contains(&name.to_lowercase()))
-            .take(20)
-            .collect();
+        // Known entities present in the query text (SQL LIKE prefilter —
+        // v0.1 loaded the whole entity table and substring-scanned in Rust).
+        let mut known_entities: Vec<(String, i64)> = Vec::new();
+        for token_raw in req.text.split_whitespace() {
+            let token = token_raw.trim_matches(|c: char| !c.is_alphanumeric());
+            if token.len() < 3 {
+                continue;
+            }
+            for summary in dao::find_entities_by_name(store.read(), token)? {
+                let name = summary.display_name;
+                if name.len() > 2
+                    && req.text.to_lowercase().contains(&name.to_lowercase())
+                    && !known_entities.iter().any(|(_, eid)| *eid == summary.id)
+                {
+                    known_entities.push((name, summary.id));
+                }
+            }
+            if known_entities.len() >= 20 {
+                break;
+            }
+        }
 
         // Summary fast path.
         if plan.use_summary {
@@ -465,8 +522,8 @@ impl Lkos {
                         return Ok(QueryResponse {
                             intent: plan.intent,
                             plan_explanation: format!(
-                                "summary fast-path: pre-built summary returned with no retrieval ({}): {}",
-                                plan.explanation, plan.explanation
+                                "summary fast-path: pre-built summary returned with no retrieval ({})",
+                                plan.explanation
                             ),
                             hits: Vec::new(),
                             context: summary.clone(),
@@ -495,22 +552,45 @@ impl Lkos {
             cfg.mmr_lambda,
             cfg.max_dense_scan,
             &known_entities,
+            cfg.enable_reranking,
+            cfg.rerank_top_n,
         )?;
 
-        // Temporal post-filtering with graceful fallback.
-        if !matches!(
-            plan.temporal,
-            crate::temporal::TemporalConstraint::None
-        ) {
-            let kept: Vec<SearchHit> = hits
-                .iter()
-                .filter(|h| {
-                    crate::temporal::matches_constraint(&h.text, &plan.temporal)
-                })
-                .cloned()
-                .collect();
-            if !kept.is_empty() {
-                hits = kept;
+        // Temporal handling: `Latest` re-ranks (boost recent); Year/Range
+        // hard-filter with graceful fallback (v0.1 filtered for both, which
+        // could drop the newest evidence for "latest" queries).
+        match &plan.temporal {
+            crate::temporal::TemporalConstraint::None => {}
+            crate::temporal::TemporalConstraint::Latest => {
+                if cfg.freshness_boost > 0.0 {
+                    for h in &mut hits {
+                        let s = crate::temporal::temporal_score(&h.text, &plan.temporal);
+                        if s > 0.0 {
+                            h.score += cfg.freshness_boost * s;
+                        }
+                    }
+                    hits.sort_by(|a, b| {
+                        b.score
+                            .partial_cmp(&a.score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
+                    });
+                    for (i, h) in hits.iter_mut().enumerate() {
+                        h.rank = i + 1;
+                    }
+                }
+            }
+            _ => {
+                let kept: Vec<SearchHit> = hits
+                    .iter()
+                    .filter(|h| {
+                        crate::temporal::matches_constraint(&h.text, &plan.temporal)
+                    })
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    hits = kept;
+                }
             }
         }
 
@@ -609,7 +689,8 @@ impl Lkos {
         dao::get_document(store.read(), id)
     }
 
-    /// Delete a document and all derived knowledge.
+    /// Delete a document and all derived knowledge, including graph edges
+    /// that lost their last evidence (v0.1 left stale co-occurrence edges).
     pub fn delete_document(&self, id: i64) -> Result<()> {
         let mut store = Store::open(&self.inner.path)?;
         // Decrement entity mention counts and df counters first.
@@ -643,6 +724,9 @@ impl Lkos {
         if !deleted {
             return Err(LkosError::DocumentNotFound(id));
         }
+        // Rebuild graph edges around every affected entity from surviving
+        // evidence (mentions deleted above, so lost evidence is excluded).
+        dao::recompute_relationships_for_entities(store.conn(), &entity_ids)?;
         self.inner.bus.publish("document.deleted", id, "");
         Ok(())
     }
@@ -727,53 +811,228 @@ impl Lkos {
         store.integrity_check()
     }
 
-    fn start_worker(&self) {
-        let engine = self.clone();
-        let shutdown = self.inner.shutdown.clone();
-        let handle = std::thread::spawn(move || loop {
-            if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+    // ------------------------------------------------------------------
+    // semantic index (LSA) lifecycle
+    // ------------------------------------------------------------------
+
+    /// Train (or retrain) the corpus-trained semantic model from all stored
+    /// chunk texts and install it. Returns `true` when a model was trained.
+    ///
+    /// No-op when the corpus is below [`Config::semantic_min_chunks`] or too
+    /// small to factor. On success the persisted model is reloaded on every
+    /// subsequent [`Lkos::open`], and stale chunks are re-embedded by
+    /// [`Lkos::reembed_stale_chunks`] (call this afterwards, or enqueue a
+    /// `train_semantic` job in background mode, which chains both).
+    pub fn train_semantic_index(&self) -> Result<bool> {
+        let Some(lsa) = &self.inner.lsa else {
+            return Ok(false); // provider is hashing; nothing to train
+        };
+        let mut store = Store::open(&self.inner.path)?;
+        let n_chunks: i64 =
+            store.read().query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+        if (n_chunks as usize) < self.inner.config.semantic_min_chunks {
+            return Ok(false);
+        }
+        // Stream chunk texts in id order (deterministic training input).
+        let mut stmt = store.read().prepare("SELECT text FROM chunks ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let texts: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+        drop(stmt);
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let Some(model) = crate::embeddings::lsa::train(
+            &refs,
+            self.inner.config.lsa_dim,
+            self.inner.config.lsa_min_df,
+            self.inner.config.lsa_max_vocab,
+            4,
+        ) else {
+            return Ok(false);
+        };
+        crate::embeddings::lsa::save_model(store.conn(), &model)?;
+        dao::meta_set(store.conn(), "embedding_model", crate::embeddings::lsa::LSA_MODEL_NAME)?;
+        dao::meta_set(store.conn(), "embedding_dim", &model.dim.to_string())?;
+        lsa.install_model(model);
+        self.inner
+            .bus
+            .publish("semantic.trained", 0, crate::embeddings::lsa::LSA_MODEL_NAME);
+        Ok(true)
+    }
+
+    /// Re-embed chunks whose embedding model differs from `target` (batched).
+    /// Returns the number of chunks migrated. `job_id` enables progress
+    /// reporting + cooperative cancellation when invoked from a worker.
+    pub fn reembed_stale_chunks(&self, target: &str, job_id: Option<i64>) -> Result<usize> {
+        let mut migrated = 0usize;
+        const BATCH: usize = 256;
+        loop {
+            if let Some(jid) = job_id {
+                let store = Store::open(&self.inner.path)?;
+                if crate::jobs::is_cancelled(store.read(), jid)? {
+                    return Err(LkosError::Cancelled);
+                }
+            }
+            let stale = {
+                let store = Store::open(&self.inner.path)?;
+                dao::stale_embedding_chunks(store.read(), target, BATCH)?
+            };
+            if stale.is_empty() {
                 break;
             }
-            let job = {
-                match Store::open(&engine.inner.path) {
-                    Ok(mut store) => match crate::jobs::claim_next(store.conn()) {
-                        Ok(Some(job)) => Some(job),
-                        Ok(None) => None,
-                        Err(_) => None,
-                    },
-                    Err(_) => None,
+            {
+                let mut store = Store::open(&self.inner.path)?;
+                let mut texts: Vec<String> = Vec::with_capacity(stale.len());
+                for cid in &stale {
+                    let t: String = store.read().query_row(
+                        "SELECT text FROM chunks WHERE id = ?1",
+                        rusqlite::params![cid],
+                        |r| r.get(0),
+                    )?;
+                    texts.push(t);
                 }
-            };
-            match job {
-                Some(job) => {
-                    let doc_id: Option<i64> = serde_json::from_str::<serde_json::Value>(&job.payload)
-                        .ok()
-                        .and_then(|v| v.get("document_id").and_then(|d| d.as_i64()));
-                    let result = match (job.kind.as_str(), doc_id) {
-                        ("process_document", Some(id)) => engine.process_document(id),
-                        ("delete_document", Some(id)) => engine.delete_document(id),
-                        _ => Err(LkosError::Other(format!("unknown job kind {}", job.kind))),
-                    };
-                    let mut store = match Store::open(&engine.inner.path) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    match result {
-                        Ok(_) => {
-                            let _ = crate::jobs::complete(store.conn(), &job);
-                        }
-                        Err(e) => {
-                            let _ = crate::jobs::fail_and_maybe_retry(store.conn(), &job, &e.to_string());
-                        }
-                    }
-                }
-                None => {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                let vectors = self.inner.embedder.embed_batch(&refs)?;
+                for (cid, v) in stale.iter().zip(vectors) {
+                    dao::update_chunk_embedding(
+                        store.conn(),
+                        *cid,
+                        &self.inner.embedder.name(),
+                        &dao::f32_to_bytes(&v),
+                    )?;
                 }
             }
-        });
-        if let Ok(mut w) = self.inner.worker.lock() {
-            *w = Some(handle);
+            migrated += stale.len();
+            if let Some(jid) = job_id {
+                if let Ok(mut store) = Store::open(&self.inner.path) {
+                    let total: i64 = store
+                        .read()
+                        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+                        .unwrap_or(1);
+                    let _ = crate::jobs::progress(
+                        store.conn(),
+                        jid,
+                        ((migrated as f64 / total.max(1) as f64) * 100.0) as i64,
+                    );
+                }
+            }
+            if stale.len() < BATCH {
+                break;
+            }
+        }
+        Ok(migrated)
+    }
+
+    /// Check whether the semantic index needs (re)training given the current
+    /// share of stale-model chunks. Returns the number of stale chunks.
+    pub fn stale_embedding_count(&self) -> Result<usize> {
+        let store = Store::open(&self.inner.path)?;
+        Ok(dao::stale_embedding_chunks(
+            store.read(),
+            &self.inner.embedder.name(),
+            usize::MAX,
+        )?
+        .len())
+    }
+
+    // ------------------------------------------------------------------
+    // entity resolution management
+    // ------------------------------------------------------------------
+
+    /// Register a user-supplied alias for an entity (e.g. "MSFT" →
+    /// "Microsoft"). Future mentions of the alias resolve to the entity.
+    pub fn add_entity_alias(&self, entity_id: i64, alias: &str) -> Result<()> {
+        let mut store = Store::open(&self.inner.path)?;
+        dao::add_alias(store.conn(), entity_id, alias)?;
+        // Alias surfaces also resolve via the alias table at extraction time.
+        Ok(())
+    }
+
+    /// Merge two entities (e.g. a false split). `survivor` keeps its identity;
+    /// `merged`'s aliases, mentions, counts and edges are transferred and an
+    /// audit row is written. Graph edges around both entities are recomputed.
+    pub fn merge_entities(&self, survivor: i64, merged: i64, reason: &str) -> Result<()> {
+        let mut store = Store::open(&self.inner.path)?;
+        dao::merge_entity_rows(store.conn(), survivor, merged, reason)?;
+        dao::recompute_relationships_for_entities(store.conn(), &[survivor])?;
+        self.inner
+            .bus
+            .publish("entity.merged", survivor, &format!("absorbed {merged}: {reason}"));
+        Ok(())
+    }
+
+    fn start_workers(&self) {
+        let n = self.inner.config.worker_threads.max(1);
+        for _ in 0..n {
+            let engine = self.clone();
+            let shutdown = self.inner.shutdown.clone();
+            let handle = std::thread::spawn(move || loop {
+                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let job = {
+                    match Store::open(&engine.inner.path) {
+                        Ok(mut store) => match crate::jobs::claim_next(store.conn()) {
+                            Ok(Some(job)) => Some(job),
+                            Ok(None) => None,
+                            Err(_) => None,
+                        },
+                        Err(_) => None,
+                    }
+                };
+                match job {
+                    Some(job) => {
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&job.payload).unwrap_or_default();
+                        let doc_id = payload.get("document_id").and_then(|d| d.as_i64());
+                        let model = payload
+                            .get("model")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("");
+                        let result = match (job.kind.as_str(), doc_id) {
+                            ("process_document", Some(id)) => engine.process_document(id),
+                            ("delete_document", Some(id)) => engine.delete_document(id),
+                            ("reembed_stale", _) => {
+                                engine.reembed_stale_chunks(model, Some(job.id)).map(|_| ())
+                            }
+                            ("train_semantic", _) => engine
+                                .train_semantic_index()
+                                .and_then(|trained| {
+                                    if trained {
+                                        engine
+                                            .reembed_stale_chunks("lsa-pmi-svd-v1", Some(job.id))
+                                            .map(|_| ())
+                                    } else {
+                                        Ok(())
+                                    }
+                                }),
+                            _ => Err(LkosError::Other(format!("unknown job kind {}", job.kind))),
+                        };
+                        let mut store = match Store::open(&engine.inner.path) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        match result {
+                            Ok(_) => {
+                                let _ = crate::jobs::complete(store.conn(), &job);
+                            }
+                            Err(e) => {
+                                let _ = crate::jobs::fail_and_maybe_retry(
+                                    store.conn(),
+                                    &job,
+                                    &e.to_string(),
+                                    engine.inner.config.job_backoff_base_secs,
+                                    engine.inner.config.job_backoff_max_secs,
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            });
+            if let Ok(mut w) = self.inner.workers.lock() {
+                w.push(handle);
+            }
         }
     }
 }

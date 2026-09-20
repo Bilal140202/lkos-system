@@ -447,6 +447,10 @@ pub struct ClaimRecord {
     pub valid_until: Option<String>,
     /// Creation timestamp.
     pub created_at: String,
+    /// Character offset of the claim sentence inside its chunk (when known).
+    pub start_offset: Option<i64>,
+    /// End offset (exclusive) of the claim sentence inside its chunk.
+    pub end_offset: Option<i64>,
 }
 
 /// A detected numeric conflict between two claims.
@@ -466,6 +470,14 @@ pub struct ConflictRecord {
     pub delta: f32,
     /// Human-readable explanation including any temporal explanation.
     pub explanation: String,
+    /// Conflict taxonomy: `same-period-disagreement` | `cross-period` |
+    /// `undated-disagreement` | `negation-conflict`.
+    #[serde(default = "default_conflict_kind")]
+    pub conflict_kind: String,
+}
+
+fn default_conflict_kind() -> String {
+    "undated-disagreement".to_string()
 }
 
 /// A relationship edge between two entities.

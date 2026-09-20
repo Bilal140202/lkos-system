@@ -1,24 +1,35 @@
 //! Hybrid retrieval: dense vector + lexical BM25, fused with Reciprocal Rank
-//! Fusion, authority-weighted, diversified with MMR, fully explainable.
+//! Fusion, reranked, authority-weighted, diversified with MMR, explainable.
 //!
 //! Pipeline (see `docs/RETRIEVAL.md` and ADR-004):
 //!
 //! ```text
-//! query ──┬─► embed ──► cosine top-N ─────┐
-//!         └─► FTS5 MATCH ──► bm25 top-N ──┤
-//!                                         ▼
+//! query ──┬─► embed(model-filtered) ─► cosine top-N ─┐
+//!         └─► FTS5 MATCH ─► bm25 top-N ─────────────┤
+//!                                                    ▼
 //!                     RRF(k=60, w_dense, w_lexical)
 //!                                   ▼
 //!                          × authority_score
 //!                                   ▼
-//!                    + entity/phrase/section boosts
+//!              + entity / phrase / section / freshness boosts
+//!                                   ▼
+//!              lexical-overlap rerank (top-N candidates, deterministic)
 //!                                   ▼
 //!                    MMR diversification (λ)
 //!                                   ▼
 //!                            top-k hits
 //! ```
 //!
-//! Every hit carries `matched_by` explanations — the "no magic" rule.
+//! Changes vs v0.1 (evidence in docs/RERANKING.md):
+//! - BM25 scores are **kept** (v0.1 discarded them; `bm25` was always 0.0),
+//!   so hits explain their true lexical evidence.
+//! - The dense channel only compares chunks embedded by the same model
+//!   (vector spaces are not comparable across models).
+//! - The entity channel is deterministic (v0.1 ranked by HashMap order).
+//! - MMR prefetches embeddings for ALL candidates up to a documented cap
+//!   (v0.1 silently degraded to relevance-only beyond k+16).
+//! - A deterministic lexical-overlap reranker re-scores the fused top-N
+//!   before MMR; ablations in docs/EVALUATION.md quantify its effect.
 
 use crate::embeddings::{cosine, EmbeddingProvider};
 use crate::error::{LkosError, Result};
@@ -90,7 +101,9 @@ fn candidate_ids(conn: &Connection, filters: Option<&Filters>) -> Result<Option<
     Ok(Some(ids))
 }
 
-/// Run lexical (FTS5/BM25) search. Returns (chunk_id, rank, bm25-rank-score).
+/// Run lexical (FTS5/BM25) search. Returns (chunk_id, rank, bm25-score)
+/// where score = -bm25 (FTS5 reports lower-is-better; we normalize to
+/// higher-is-better). v0.1 returned `-(rank)` and threw the score away.
 pub fn lexical_search(
     conn: &Connection,
     query: &str,
@@ -129,8 +142,9 @@ pub fn lexical_search(
     let mut rank = 1usize;
     while let Some(row) = rows.next()? {
         let id: i64 = row.get(0)?;
-        let _bm: f64 = row.get(1)?;
-        out.push((id, rank, -(rank as f32)));
+        let bm: f64 = row.get(1)?;
+        // FTS5 rank = bm25 (more negative = better). Report higher-better.
+        out.push((id, rank, -(bm as f32)));
         rank += 1;
         if out.len() >= top_n {
             break;
@@ -139,7 +153,8 @@ pub fn lexical_search(
     Ok(out)
 }
 
-/// Dense (cosine) search over all embeddings. Brute force; capped by `max_scan`.
+/// Dense (cosine) search restricted to chunks embedded by the provider's
+/// model. Single-pass blob scan (v0.1 issued one SELECT per chunk).
 pub fn vector_search(
     conn: &Connection,
     provider: &dyn EmbeddingProvider,
@@ -149,11 +164,11 @@ pub fn vector_search(
     max_scan: usize,
 ) -> Result<Vec<(i64, usize, f32)>> {
     let qv = provider.embed(query)?;
-    let corpus = dao::all_embeddings(conn, filters)?;
+    let corpus = dao::all_embeddings(conn, filters, &provider.name())?;
     if corpus.len() > max_scan {
         return Err(LkosError::Other(format!(
             "dense scan would cover {} chunks (cap {max_scan}); \
-             reduce the library, use filters, or enable an ANN index (roadmap 0.3)",
+             reduce the library, use filters, or shard the index",
             corpus.len()
         )));
     }
@@ -162,7 +177,12 @@ pub fn vector_search(
         .map(|(id, v)| (id, cosine(&qv, &v)))
         .filter(|(_, s)| *s > 0.0)
         .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Deterministic order: score desc, then chunk id asc (tie-break).
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     Ok(scored
         .into_iter()
         .take(top_n)
@@ -171,7 +191,7 @@ pub fn vector_search(
         .collect())
 }
 
-/// Core hybrid search. Returns fused+boosted+MMR-diversified hits.
+/// Core hybrid search. Returns fused+reranked+boosted+MMR-diversified hits.
 #[allow(clippy::too_many_arguments)]
 pub fn hybrid_search(
     conn: &Connection,
@@ -186,6 +206,8 @@ pub fn hybrid_search(
     mmr_lambda: f32,
     max_scan: usize,
     known_entities: &[(String, i64)],
+    enable_reranking: bool,
+    rerank_top_n: usize,
 ) -> Result<Vec<SearchHit>> {
     let top_n = (top_k * 6).clamp(24, 200);
 
@@ -205,16 +227,24 @@ pub fn hybrid_search(
         }
     };
 
-    // Entity-intersection channel.
+    // Entity-intersection channel — deterministic order (by entity id, then
+    // chunk id). v0.1 ranked these by HashMap iteration order.
     let mut entity_chunk_name: HashMap<i64, String> = HashMap::new();
+    let mut entity_chunk_ids: Vec<i64> = Vec::new();
     if matches!(mode, RetrievalMode::EntityLookup) {
-        let rank = 1usize;
-        for (name, eid) in known_entities {
-            for cid in dao::chunks_for_entity(conn, *eid)? {
-                entity_chunk_name.entry(cid).or_insert_with(|| name.clone());
-                let _ = rank;
+        let mut by_id: Vec<(i64, &str)> = known_entities
+            .iter()
+            .map(|(name, eid)| (*eid, name.as_str()))
+            .collect();
+        by_id.sort_unstable();
+        for (eid, name) in by_id {
+            for cid in dao::chunks_for_entity(conn, eid)? {
+                if entity_chunk_name.insert(cid, name.to_string()).is_none() {
+                    entity_chunk_ids.push(cid);
+                }
             }
         }
+        entity_chunk_ids.sort_unstable();
     }
 
     // RRF fusion.
@@ -235,18 +265,22 @@ pub fn hybrid_search(
             &mut fusion,
         );
     }
-    for (id, rank, _) in &fts_res {
-        bump(*id, w_fts, *rank, MatchSource::Fts { rank: *rank, bm25: 0.0 }, &mut fusion);
+    for (id, rank, bm25_score) in &fts_res {
+        bump(
+            *id,
+            w_fts,
+            *rank,
+            MatchSource::Fts { rank: *rank, bm25: *bm25_score },
+            &mut fusion,
+        );
     }
     if matches!(mode, RetrievalMode::EntityLookup) {
-        for (rank, (cid, name)) in entity_chunk_name.iter().enumerate() {
-            bump(
-                *cid,
-                0.8,
-                rank + 1,
-                MatchSource::Entity { name: name.clone() },
-                &mut fusion,
-            );
+        for (rank, cid) in entity_chunk_ids.iter().enumerate() {
+            let name = entity_chunk_name
+                .get(cid)
+                .cloned()
+                .unwrap_or_default();
+            bump(*cid, 0.8, rank + 1, MatchSource::Entity { name }, &mut fusion);
         }
     }
 
@@ -285,8 +319,17 @@ pub fn hybrid_search(
         scored_rows.push((id, score, sources, row));
     }
 
-    // Sort by score desc.
-    scored_rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score desc, tie-break by chunk id (deterministic).
+    scored_rows.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    // Lexical-overlap rerank over the fused top-N (deterministic).
+    if enable_reranking && !matches!(mode, RetrievalMode::EntityLookup) {
+        rerank_lexical_overlap(&mut scored_rows, rerank_top_n, &query_tokens);
+    }
 
     // MMR diversification on chunk embeddings.
     let selected = mmr_select(conn, scored_rows, top_k, mmr_lambda)?;
@@ -309,7 +352,57 @@ pub fn hybrid_search(
     Ok(hits)
 }
 
-/// Maximal Marginal Relevance selection with embedding lookups (cached).
+/// Deterministic lexical-overlap reranker.
+///
+/// Re-scores the top `window` fused candidates with a BM25-flavored term
+/// coverage signal: matched query terms (weighted by inverse document
+/// length) over the candidate text. The reranker only REORDERS candidates
+/// the channels already surfaced — it cannot inject unseen chunks — so it
+/// is safe to apply without a second candidate pass. The fused score and
+/// rerank score are combined 50/50 after min-max normalization within the
+/// window, preserving fusion evidence in `matched_by`.
+fn rerank_lexical_overlap(
+    scored: &mut [(i64, f32, Vec<MatchSource>, HitRow)],
+    window: usize,
+    query_tokens: &HashSet<String>,
+) {
+    if window == 0 || query_tokens.is_empty() || scored.is_empty() {
+        return;
+    }
+    let window = window.min(scored.len());
+
+    // Pass 1: compute raw rerank scores for the window.
+    let mut raw: Vec<f32> = Vec::with_capacity(window);
+    for entry in scored.iter().take(window) {
+        let text_tokens: HashSet<String> =
+            crate::embeddings::tokenize(&entry.3.text).into_iter().collect();
+        let overlap = query_tokens.intersection(&text_tokens).count();
+        // Length-normalized coverage: avoids biasing toward long chunks.
+        let cov = overlap as f32 / query_tokens.len() as f32;
+        let len_penalty = (text_tokens.len() as f32 + 32.0).ln();
+        raw.push(cov / len_penalty.sqrt());
+    }
+    let min = raw.iter().cloned().fold(f32::MAX, f32::min);
+    let max = raw.iter().cloned().fold(f32::MIN, f32::max);
+    let span = (max - min).max(f32::EPSILON);
+
+    // Pass 2: blend normalized rerank score with the fused score (50/50).
+    for (i, entry) in scored.iter_mut().take(window).enumerate() {
+        let rr = (raw[i] - min) / span;
+        entry.1 = 0.5 * entry.1 + 0.5 * rr;
+    }
+
+    // Pass 3: re-sort the window (deterministic tie-break by chunk id).
+    scored[..window].sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+}
+
+/// Maximal Marginal Relevance selection with embedding lookups (cached for
+/// the full candidate window up to 64 — v0.1 prefetched only k+16 and
+/// silently degraded to relevance-only beyond that).
 type ScoredHit = (i64, f32, Vec<MatchSource>, HitRow);
 
 fn mmr_select(
@@ -323,7 +416,7 @@ fn mmr_select(
         return Ok(scored);
     }
     let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
-    let prefetch = (k + 16).min(scored.len());
+    let prefetch = scored.len().min(64);
     for (id, _, _, _) in scored.iter().take(prefetch) {
         if !embeddings.contains_key(id) {
             embeddings.insert(*id, dao::chunk_embedding(conn, *id)?.unwrap_or_default());

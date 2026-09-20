@@ -11,11 +11,17 @@
 //! (ROADMAP 0.2), and the hybrid BM25 channel carries most precision load.
 
 use crate::error::Result;
+use std::borrow::Cow;
+use std::sync::{Arc, RwLock};
+
+pub mod lsa;
 
 /// A local embedding provider.
 pub trait EmbeddingProvider: Send + Sync {
     /// Provider/model name recorded in the index (used for reindex checks).
-    fn name(&self) -> &str;
+    /// `Cow` lets dual-mode providers (LSA + hashing fallback) report the
+    /// model that is *actually* active without leaking a lock guard.
+    fn name(&self) -> Cow<'_, str>;
     /// Dimensionality of produced vectors.
     fn dim(&self) -> usize;
     /// Embed a batch of texts (batching allows providers to amortize work).
@@ -59,8 +65,8 @@ impl HashingEmbedder {
 }
 
 impl EmbeddingProvider for HashingEmbedder {
-    fn name(&self) -> &str {
-        "hashing-lex-v1"
+    fn name(&self) -> Cow<'_, str> {
+        Cow::Borrowed("hashing-lex-v1")
     }
 
     fn dim(&self) -> usize {
@@ -141,6 +147,78 @@ pub fn tokenize(s: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// Dual-mode provider: LSA when a trained model is installed, hashing
+/// fallback otherwise. The provider reports whichever model is *actually*
+/// active via `name()`, so index lineage (`chunks.embedding_model`) and the
+/// engine's mismatch checks stay truthful in both modes.
+pub struct LsaEmbedder {
+    fallback: HashingEmbedder,
+    model: RwLock<Option<Arc<lsa::LsaModel>>>,
+    name_cache: RwLock<String>,
+}
+
+impl LsaEmbedder {
+    /// Create with the fallback dimension (used before training).
+    pub fn new(fallback_dim: usize) -> Self {
+        let fallback = HashingEmbedder::new(fallback_dim);
+        let initial = fallback.name().into_owned();
+        LsaEmbedder {
+            fallback,
+            model: RwLock::new(None),
+            name_cache: RwLock::new(initial),
+        }
+    }
+
+    /// Install a trained model (switches the active embedding space).
+    pub fn install_model(&self, model: lsa::LsaModel) {
+        *self.name_cache.write().expect("name lock") = lsa::LSA_MODEL_NAME.to_string();
+        *self.model.write().expect("model lock") = Some(Arc::new(model));
+    }
+
+    /// Remove the trained model (revert to the hashing fallback).
+    pub fn clear_model(&self) {
+        let fallback_name = self.fallback.name().into_owned();
+        *self.name_cache.write().expect("name lock") = fallback_name;
+        *self.model.write().expect("model lock") = None;
+    }
+
+    /// Is a trained model active?
+    pub fn is_trained(&self) -> bool {
+        self.model.read().expect("model lock").is_some()
+    }
+}
+
+impl EmbeddingProvider for LsaEmbedder {
+    fn name(&self) -> Cow<'_, str> {
+        Cow::Owned(self.name_cache.read().expect("name lock").clone())
+    }
+
+    fn dim(&self) -> usize {
+        match self.model.read().expect("model lock").as_ref() {
+            Some(m) => m.dim,
+            None => self.fallback.dim(),
+        }
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let guard = self.model.read().expect("model lock");
+        match guard.as_ref() {
+            Some(m) => Ok(texts
+                .iter()
+                .map(|t| {
+                    // In-vocab → latent projection; fully OOV → zero vector
+                    // (cosine 0 vs everything; lexical channel still covers it).
+                    m.project(t).unwrap_or_else(|| vec![0.0; m.dim])
+                })
+                .collect()),
+            None => {
+                drop(guard);
+                self.fallback.embed_batch(texts)
+            }
+        }
+    }
 }
 
 /// Cosine similarity of two vectors (assumes L2-normalized inputs; falls back

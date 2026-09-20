@@ -13,7 +13,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
 /// Current schema version (PRAGMA user_version).
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// A thin wrapper over a SQLite connection with LKOS pragmas applied.
 pub struct Store {
@@ -72,6 +72,15 @@ impl Store {
         }
         if version < 4 {
             self.conn.execute_batch(schema::V4_JOBS_META)?;
+        }
+        if version < 5 {
+            self.conn.execute_batch(schema::V5_SEMANTIC_INCREMENTAL)?;
+        }
+        if version > SCHEMA_VERSION {
+            return Err(crate::error::LkosError::Other(format!(
+                "database schema v{version} is newer than this build (v{SCHEMA_VERSION}); \
+                 upgrade LKOS instead of downgrading onto this library"
+            )));
         }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(())

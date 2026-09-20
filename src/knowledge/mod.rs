@@ -77,6 +77,12 @@ pub struct ExtractedClaim {
     pub valid_from: Option<String>,
     /// Optional validity end.
     pub valid_until: Option<String>,
+    /// Sentence start offset inside the chunk text (provenance).
+    pub start_offset: usize,
+    /// Sentence end offset inside the chunk text (provenance).
+    pub end_offset: usize,
+    /// True when the sentence negates the predicate ("Acme is not profitable").
+    pub negated: bool,
 }
 
 use std::sync::OnceLock;
@@ -367,14 +373,20 @@ pub fn split_sentences(text: &str) -> Vec<(usize, String)> {
     sentences
 }
 
-/// Extract claim candidates from text using SVO patterns.
+/// Extract claim candidates from text using SVO patterns, with sentence
+/// offsets (provenance) and negation detection (contradiction taxonomy).
 pub fn extract_claims(text: &str) -> Vec<ExtractedClaim> {
     let mut out = Vec::new();
-    for (_off, sentence) in split_sentences(text) {
+    for (off, sentence) in split_sentences(text) {
         if sentence.len() < 12 || sentence.len() > 400 {
             continue;
         }
-        for claim in match_sentence(&sentence) {
+        let negated = crate::claims::sentence_is_negative(&sentence);
+        let end = off + sentence.len();
+        for mut claim in match_sentence(&sentence) {
+            claim.start_offset = off;
+            claim.end_offset = end;
+            claim.negated = negated;
             out.push(claim);
         }
     }
@@ -388,6 +400,7 @@ static RE_VALID_UNTIL: OnceLock<regex::Regex> = OnceLock::new();
 
 fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
     let mut out = Vec::new();
+    let negated = crate::claims::sentence_is_negative(sentence);
 
     // Numeric metric claims: "<Subject> revenue/profit/users ... $10M / 45% ..."
     // NOTE: `[ \t]+` (not `\s+`) so a subject can never swallow a preceding
@@ -409,9 +422,12 @@ fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
             predicate,
             object,
             sentence: sentence.to_string(),
-            confidence: 0.6,
+            confidence: if negated { 0.45 } else { 0.6 },
             valid_from: vf,
             valid_until: vu,
+            start_offset: 0,
+            end_offset: 0,
+            negated,
         });
         return out;
     }
@@ -439,9 +455,12 @@ fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
                 predicate,
                 object,
                 sentence: sentence.to_string(),
-                confidence: 0.5,
+                confidence: if negated { 0.35 } else { 0.5 },
                 valid_from: vf,
                 valid_until: vu,
+                start_offset: 0,
+                end_offset: 0,
+                negated,
             });
             return out;
         }
@@ -467,9 +486,12 @@ fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
                 predicate: "is".into(),
                 object,
                 sentence: sentence.to_string(),
-                confidence: 0.4,
+                confidence: if negated { 0.3 } else { 0.4 },
                 valid_from: vf,
                 valid_until: vu,
+                start_offset: 0,
+                end_offset: 0,
+                negated,
             });
         }
     }

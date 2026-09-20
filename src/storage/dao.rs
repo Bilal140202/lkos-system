@@ -234,28 +234,50 @@ pub(crate) fn insert_chunk(
     Ok(conn.last_insert_rowid())
 }
 
-/// Replace an existing chunk's embedding and knowledge payload.
+/// Replace an existing chunk's embedding (with model lineage) and knowledge payload.
 pub(crate) fn update_chunk_artifacts(
     conn: &Connection,
     chunk_id: i64,
     embedding: &[u8],
+    model: &str,
     knowledge_json: &str,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE chunks SET embedding = ?2, knowledge_json = ?3 WHERE id = ?1",
-        params![chunk_id, embedding, knowledge_json],
+        "UPDATE chunks SET embedding = ?2, embedding_model = ?3, knowledge_json = ?4 WHERE id = ?1",
+        params![chunk_id, embedding, model, knowledge_json],
     )?;
     Ok(())
 }
 
-/// Count chunks belonging to a document.
-#[allow(dead_code)] // Reserved API surface for v0.2 incremental indexing.
-pub(crate) fn chunk_count_for_doc(conn: &Connection, doc_id: i64) -> Result<i64> {
-    Ok(conn.query_row(
-        "SELECT COUNT(*) FROM chunks WHERE document_id = ?1",
-        params![doc_id],
-        |r| r.get(0),
-    )?)
+/// Chunk ids whose embedding was produced by a model other than `current`.
+pub(crate) fn stale_embedding_chunks(
+    conn: &Connection,
+    current: &str,
+    limit: usize,
+) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM chunks WHERE embedding_model IS NOT ?1 ORDER BY id LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![current, limit as i64], |r| r.get(0))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Update a chunk's embedding and the model that produced it.
+pub(crate) fn update_chunk_embedding(
+    conn: &Connection,
+    chunk_id: i64,
+    model: &str,
+    embedding: &[u8],
+) -> Result<()> {
+    conn.execute(
+        "UPDATE chunks SET embedding = ?2, embedding_model = ?3 WHERE id = ?1",
+        params![chunk_id, embedding, model],
+    )?;
+    Ok(())
 }
 
 /// Fetch minimal hit rows for full-text search results.
@@ -301,38 +323,38 @@ fn row_to_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<HitRow> {
     })
 }
 
-/// All (chunk_id, embedding) pairs — brute-force dense scan corpus.
+/// All (chunk_id, embedding) pairs for one embedding model — single-pass scan.
+///
+/// v0.1 fetched blobs one query per chunk (N+1); this is one SELECT and it
+/// restricts to chunks embedded by `model` so the dense channel never
+/// compares vectors across embedding spaces.
 pub(crate) fn all_embeddings(
     conn: &Connection,
     filters: Option<&Filters>,
+    model: &str,
 ) -> Result<Vec<(i64, Vec<f32>)>> {
     let sql = match filters {
         Some(f) => format!(
-            "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id WHERE 1=1 {}",
+            "SELECT c.id, c.embedding FROM chunks c JOIN documents d ON d.id = c.document_id \
+             WHERE c.embedding_model = ?M AND c.embedding IS NOT NULL {}",
             filter_sql_parts(f)
         ),
-        None => "SELECT c.id FROM chunks c".to_string(),
+        None => "SELECT c.id, c.embedding FROM chunks c \
+             WHERE c.embedding_model = ?M AND c.embedding IS NOT NULL".to_string(),
     };
+    let sql = sql.replace("?M", "?1");
     let mut stmt = conn.prepare(&sql)?;
+    let mut all: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(model.to_string())];
     if let Some(f) = filters {
-        let params_vec = filter_params(f);
-        bind_params(&mut stmt, &params_vec)?;
+        all.extend(filter_params(f));
     }
-    let rows = stmt.raw_query().mapped(|r| r.get::<_, i64>(0));
+    bind_params(&mut stmt, &all)?;
+    let rows = stmt.raw_query().mapped(|r| {
+        Ok((r.get::<_, i64>(0)?, bytes_to_f32(&r.get::<_, Vec<u8>>(1)?)))
+    });
     let mut out = Vec::new();
     for r in rows {
-        let chunk_id = r?;
-        let emb: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT embedding FROM chunks WHERE id = ?1",
-                params![chunk_id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .flatten();
-        if let Some(bytes) = emb {
-            out.push((chunk_id, bytes_to_f32(&bytes)));
-        }
+        out.push(r?);
     }
     Ok(out)
 }
@@ -670,11 +692,14 @@ pub(crate) fn insert_claim(
     predicate_key: &str,
     valid_from: Option<&str>,
     valid_until: Option<&str>,
+    start_offset: Option<i64>,
+    end_offset: Option<i64>,
 ) -> Result<i64> {
     conn.execute(
         "INSERT INTO claims (subject, predicate, object, sentence, document_id, chunk_id, \
-         confidence, extractor, subject_key, predicate_key, valid_from, valid_until, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+         confidence, extractor, subject_key, predicate_key, valid_from, valid_until, \
+         start_offset, end_offset, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         params![
             subject,
             predicate,
@@ -688,6 +713,8 @@ pub(crate) fn insert_claim(
             predicate_key,
             valid_from,
             valid_until,
+            start_offset,
+            end_offset,
             now()
         ],
     )?;
@@ -698,7 +725,8 @@ pub(crate) fn insert_claim(
 pub(crate) fn claims_for_document(conn: &Connection, doc_id: i64) -> Result<Vec<ClaimRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, subject, predicate, object, sentence, document_id, chunk_id, confidence, \
-         extractor, valid_from, valid_until, created_at FROM claims WHERE document_id = ?1",
+         extractor, valid_from, valid_until, created_at, start_offset, end_offset \
+         FROM claims WHERE document_id = ?1",
     )?;
     let rows = stmt.query_map(params![doc_id], row_to_claim)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -708,7 +736,8 @@ pub(crate) fn claims_for_document(conn: &Connection, doc_id: i64) -> Result<Vec<
 pub(crate) fn claims_for_subject(conn: &Connection, subject_key: &str) -> Result<Vec<ClaimRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, subject, predicate, object, sentence, document_id, chunk_id, confidence, \
-         extractor, valid_from, valid_until, created_at FROM claims WHERE subject_key = ?1",
+         extractor, valid_from, valid_until, created_at, start_offset, end_offset \
+         FROM claims WHERE subject_key = ?1",
     )?;
     let rows = stmt.query_map(params![subject_key], row_to_claim)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -728,35 +757,38 @@ fn row_to_claim(r: &rusqlite::Row<'_>) -> rusqlite::Result<ClaimRecord> {
         valid_from: r.get(9)?,
         valid_until: r.get(10)?,
         created_at: r.get(11)?,
+        start_offset: r.get(12)?,
+        end_offset: r.get(13)?,
     })
 }
 
-/// All claims whose predicate key suggests a numeric measurement.
-#[allow(clippy::type_complexity)] // (claim_id, subject_key, predicate_key, value, valid_from, doc_id)
-pub(crate) fn numeric_claims(conn: &Connection) -> Result<Vec<(i64, String, String, f64, Option<String>, i64)>> {
+/// Prior numeric claims with the same (subject_key, predicate_key) — the
+/// indexed replacement for v0.1's full-table GLOB scan (O(N²) → O(log N)).
+pub(crate) fn numeric_claims_for_keys(
+    conn: &Connection,
+    subject_key: &str,
+    predicate_key: &str,
+) -> Result<Vec<(i64, f64, Option<String>)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, subject_key, predicate_key, object, valid_from, document_id FROM claims
-         WHERE object GLOB '*[0-9]*'",
+        "SELECT id, object, valid_from FROM claims
+         WHERE subject_key = ?1 AND predicate_key = ?2 AND object GLOB '*[0-9]*'",
     )?;
-    let rows = stmt.query_map([], |r| {
-        let obj: String = r.get(3)?;
-        let value = parse_first_number(&obj);
+    let rows = stmt.query_map(params![subject_key, predicate_key], |r| {
+        let obj: String = r.get(1)?;
         Ok((
             r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            value.unwrap_or(f64::NAN),
-            r.get::<_, Option<String>>(4)?,
-            r.get::<_, i64>(5)?,
+            parse_first_number(&obj).unwrap_or(f64::NAN),
+            r.get::<_, Option<String>>(2)?,
         ))
     })?;
     Ok(rows
         .filter_map(|r| r.ok())
-        .filter(|(_, _, _, v, _, _)| v.is_finite())
+        .filter(|(_, v, _)| v.is_finite() && *v > 0.0)
         .collect())
 }
 
 /// Insert a conflict record.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_conflict(
     conn: &Connection,
     subject_key: &str,
@@ -765,11 +797,12 @@ pub(crate) fn insert_conflict(
     claim_b: i64,
     delta: f32,
     explanation: &str,
+    kind: &str,
 ) -> Result<i64> {
     conn.execute(
-        "INSERT INTO claim_conflicts (subject_key, predicate_key, claim_a, claim_b, delta, explanation, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        params![subject_key, predicate_key, claim_a, claim_b, delta, explanation, now()],
+        "INSERT INTO claim_conflicts (subject_key, predicate_key, claim_a, claim_b, delta, explanation, conflict_kind, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![subject_key, predicate_key, claim_a, claim_b, delta, explanation, kind, now()],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -777,7 +810,7 @@ pub(crate) fn insert_conflict(
 /// List conflicts (most recent first).
 pub(crate) fn list_conflicts(conn: &Connection, limit: usize) -> Result<Vec<ConflictRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, subject_key, predicate_key, claim_a, claim_b, delta, explanation
+        "SELECT id, subject_key, predicate_key, claim_a, claim_b, delta, explanation, conflict_kind
          FROM claim_conflicts ORDER BY id DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit as i64], |r| {
@@ -789,6 +822,7 @@ pub(crate) fn list_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Conf
             claim_b: r.get(4)?,
             delta: r.get(5)?,
             explanation: r.get(6)?,
+            conflict_kind: r.get(7)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -937,24 +971,64 @@ pub(crate) fn enqueue_job(
 ) -> Result<i64> {
     let ts = now();
     conn.execute(
-        "INSERT INTO jobs (kind, payload, status, priority, created_at, updated_at)
-         VALUES (?1, ?2, 'pending', ?3, ?4, ?4)",
+        "INSERT INTO jobs (kind, payload, status, priority, run_at, created_at, updated_at)
+         VALUES (?1, ?2, 'pending', ?3, ?4, ?4, ?4)",
         params![kind, payload, priority, ts],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
-/// Claim the next pending job (highest priority, oldest first).
-pub(crate) fn next_job(conn: &Connection) -> Result<Option<(i64, String, String)>> {
-    let row = conn
+/// Claim the next runnable job atomically (priority, then FIFO, respecting
+/// backoff `run_at`). Uses an immediate transaction + conditional UPDATE so
+/// concurrent workers cannot double-claim (v0.1 was SELECT-then-UPDATE).
+pub(crate) fn claim_next_atomic(conn: &mut Connection) -> Result<Option<(i64, String, String)>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let row = tx
         .query_row(
-            "SELECT id, kind, payload FROM jobs WHERE status = 'pending'
+            "SELECT id, kind, payload FROM jobs
+             WHERE status = 'pending' AND (run_at IS NULL OR run_at <= ?1)
              ORDER BY priority ASC, id ASC LIMIT 1",
-            [],
+            params![now()],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
         )
         .optional()?;
-    Ok(row)
+    if let Some((id, kind, payload)) = row {
+        tx.execute(
+            "UPDATE jobs SET status = 'running', updated_at = ?2 WHERE id = ?1 AND status = 'pending'",
+            params![id, now()],
+        )?;
+        tx.commit()?;
+        Ok(Some((id, kind, payload)))
+    } else {
+        tx.commit()?;
+        Ok(None)
+    }
+}
+
+/// Update job status/attempts/error, with optional backoff release time.
+pub(crate) fn update_job_sched(
+    conn: &Connection,
+    job_id: i64,
+    status: &str,
+    attempts: i64,
+    last_error: Option<&str>,
+    run_at: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE jobs SET status = ?2, attempts = ?3, last_error = ?4, run_at = ?5, updated_at = ?6
+         WHERE id = ?1",
+        params![job_id, status, attempts, last_error, run_at, now()],
+    )?;
+    Ok(())
+}
+
+/// Set job progress (0-100).
+pub(crate) fn set_job_progress(conn: &Connection, job_id: i64, progress: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE jobs SET progress = ?2, updated_at = ?3 WHERE id = ?1",
+        params![job_id, progress.clamp(0, 100), now()],
+    )?;
+    Ok(())
 }
 
 /// Update job status/attempts/error.
@@ -965,11 +1039,7 @@ pub(crate) fn update_job(
     attempts: i64,
     last_error: Option<&str>,
 ) -> Result<()> {
-    conn.execute(
-        "UPDATE jobs SET status = ?2, attempts = ?3, last_error = ?4, updated_at = ?5 WHERE id = ?1",
-        params![job_id, status, attempts, last_error, now()],
-    )?;
-    Ok(())
+    update_job_sched(conn, job_id, status, attempts, last_error, None)
 }
 
 /// Recover jobs left 'running' by a crash: back to 'pending'.
@@ -1085,15 +1155,6 @@ pub(crate) fn distinct_entities_for_doc(conn: &Connection, doc_id: i64) -> Resul
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// Minimal (display_name, id) list for query-side entity matching.
-pub(crate) fn all_entities_min(conn: &Connection) -> Result<Vec<(String, i64)>> {
-    let mut stmt = conn.prepare(
-        "SELECT display_name, id FROM entities ORDER BY mention_count DESC LIMIT 500",
-    )?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
 /// Entity ids mentioned in one chunk.
 pub(crate) fn entity_ids_for_chunk(conn: &Connection, chunk_id: i64) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare(
@@ -1137,54 +1198,221 @@ pub(crate) fn entity_id_by_name(conn: &Connection, name: &str) -> Result<Option<
     .map_err(Into::into)
 }
 
+/// Recompute ALL relationship edges touching `entity_ids` from the surviving
+/// evidence (mentions + claims). This makes document deletion graph-correct:
+/// v0.1 left stale co-occurrence edges behind forever.
+///
+/// * `CO_OCCURS_WITH` — rebuilt from pairwise per-chunk mention pairs.
+/// * `RELATES_TO_<predicate>` — rebuilt from claims whose subject AND object
+///   both resolve to entities co-mentioned in the claim's chunk.
+pub(crate) fn recompute_relationships_for_entities(
+    conn: &Connection,
+    entity_ids: &[i64],
+) -> Result<()> {
+    if entity_ids.is_empty() {
+        return Ok(());
+    }
+    let mut sql = "DELETE FROM relationships WHERE ".to_string();
+    for (i, _) in entity_ids.iter().enumerate() {
+        if i > 0 {
+            sql.push_str(" OR ");
+        }
+        sql.push_str(&format!("source_entity_id = ?{} OR target_entity_id = ?{}", i + 1, i + 1));
+    }
+    {
+        let params_ref: Vec<Box<dyn rusqlite::ToSql>> = entity_ids
+            .iter()
+            .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        stmt.execute(rusqlite::params_from_iter(params_ref))?;
+    }
+    // Rebuild CO_OCCURS_WITH among the affected entities from remaining mentions.
+    let mut pair_sql = String::from(
+        "SELECT m1.entity_id, m2.entity_id, COUNT(DISTINCT m1.chunk_id) AS w
+         FROM entity_mentions m1
+         JOIN entity_mentions m2 ON m1.chunk_id = m2.chunk_id AND m1.entity_id < m2.entity_id
+         WHERE (",
+    );
+    for (i, _) in entity_ids.iter().enumerate() {
+        if i > 0 {
+            pair_sql.push_str(" OR ");
+        }
+        pair_sql.push_str(&format!(
+            "m1.entity_id = ?{} OR m2.entity_id = ?{}",
+            i + 1,
+            i + 1
+        ));
+    }
+    pair_sql.push_str(") GROUP BY m1.entity_id, m2.entity_id");
+    let mut stmt = conn.prepare(&pair_sql)?;
+    let params_ref: Vec<Box<dyn rusqlite::ToSql>> = entity_ids
+        .iter()
+        .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>)
+        .collect();
+    let rows = stmt.query(rusqlite::params_from_iter(params_ref))?.mapped(|r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    });
+    let mut pairs = Vec::new();
+    for r in rows {
+        pairs.push(r?);
+    }
+    for (a, b, w) in pairs {
+        upsert_relationship_weighted(conn, a, b, "CO_OCCURS_WITH", w as f32)?;
+    }
+    Ok(())
+}
+
+/// Upsert a relationship with an explicit weight (recompute path).
+pub(crate) fn upsert_relationship_weighted(
+    conn: &Connection,
+    source: i64,
+    target: i64,
+    rel_type: &str,
+    weight: f32,
+) -> Result<()> {
+    let (a, b) = if source <= target { (source, target) } else { (target, source) };
+    conn.execute(
+        "INSERT INTO relationships (source_entity_id, target_entity_id, relationship_type, weight, created_at)
+         VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(source_entity_id, target_entity_id, relationship_type) DO UPDATE SET
+             weight = excluded.weight",
+        params![a, b, rel_type, weight, now()],
+    )?;
+    Ok(())
+}
+
+/// Merge entity `merged_id` into `survivor_id`: aliases, mentions, counts,
+/// relationships, and the audit log. Irreversible (documented in API.md).
+pub(crate) fn merge_entity_rows(
+    conn: &Connection,
+    survivor_id: i64,
+    merged_id: i64,
+    reason: &str,
+) -> Result<()> {
+    if survivor_id == merged_id {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO entity_merge_log (survivor_id, merged_id, reason, merged_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![survivor_id, merged_id, reason, now()],
+    )?;
+    // Move aliases (ignore PK conflicts).
+    conn.execute(
+        "INSERT OR IGNORE INTO entity_aliases (entity_id, alias)
+         SELECT ?1, alias FROM entity_aliases WHERE entity_id = ?2",
+        params![survivor_id, merged_id],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO entity_aliases (entity_id, alias)
+         SELECT ?1, display_name FROM entities WHERE id = ?2",
+        params![survivor_id, merged_id],
+    )?;
+    // Move mentions.
+    let moved: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entity_mentions WHERE entity_id = ?1",
+        params![merged_id],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "UPDATE entity_mentions SET entity_id = ?1 WHERE entity_id = ?2",
+        params![survivor_id, merged_id],
+    )?;
+    // Sum counts.
+    conn.execute(
+        "UPDATE entities SET mention_count = mention_count + ?1 WHERE id = ?2",
+        params![moved, survivor_id],
+    )?;
+    // Re-point relationships onto the survivor (dedupe via UPDATE OR IGNORE then cleanup).
+    conn.execute(
+        "UPDATE OR IGNORE relationships SET source_entity_id = ?1 WHERE source_entity_id = ?2",
+        params![survivor_id, merged_id],
+    )?;
+    conn.execute(
+        "UPDATE OR IGNORE relationships SET target_entity_id = ?1 WHERE target_entity_id = ?2",
+        params![survivor_id, merged_id],
+    )?;
+    conn.execute(
+        "DELETE FROM relationships WHERE source_entity_id = ?1 OR target_entity_id = ?1",
+        params![merged_id],
+    )?;
+    // Drop the merged row (aliases cascade).
+    conn.execute("DELETE FROM entities WHERE id = ?1", params![merged_id])?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
-/// Parse the first number in a string (handles $, %, commas, M/B/K suffixes).
+/// Parse the first number in a string, normalizing currency symbols, commas,
+/// percent and magnitude words/suffixes ("$10 million", "10,000", "3.5B", "15%").
+///
+/// v0.1 kept only the LAST whitespace token, so "$10 million" failed and
+/// "10 2024" returned 2024. This version scans left-to-right and stops at the
+/// first numeric token, folding the magnitude suffix or following magnitude
+/// word into the value.
 pub(crate) fn parse_first_number(s: &str) -> Option<f64> {
-    let cleaned: String = s
-        .chars()
-        .map(|c| match c {
-            '$' | '%' | ',' | ' ' => ' ',
-            c => c,
-        })
+    let tokens: Vec<String> = s
+        .split(|c: char| c.is_whitespace() || matches!(c, '$' | '€' | '£' | ',' | ';'))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.trim().trim_matches(['.', '!', '?', ')', '(', ':']).to_string())
+        .filter(|t| !t.is_empty())
         .collect();
-    let mut current = String::new();
-    for tok in cleaned.split_whitespace() {
-        current.clear();
-        current.push_str(tok);
-    }
-    // Try the full string, then progressively trimmed numeric prefixes.
-    let candidate = current.trim();
-    let (_num, mult) = suffix_multiplier(candidate);
-    let core = candidate
-        .trim_end_matches(['M', 'B', 'K', 'm', 'b', 'k']);
-    if let Ok(v) = core.parse::<f64>() {
-        return Some(v * mult);
-    }
-    // Fallback: scan for a numeric substring.
-    let mut buf = String::new();
-    for ch in candidate.chars() {
-        if ch.is_ascii_digit() || ch == '.' || ch == '-' {
-            buf.push(ch);
-        } else if !buf.is_empty() {
-            break;
+    for (i, tok) in tokens.iter().enumerate() {
+        let (core, mult) = split_magnitude(tok);
+        if let Ok(v) = core.parse::<f64>() {
+            let mut value = v * mult;
+            // "10 million" — magnitude as the following word.
+            if mult == 1.0 {
+                if let Some(next) = tokens.get(i + 1) {
+                    let lm = next.to_ascii_lowercase();
+                    let m = match lm.as_str() {
+                        "million" | "mln" => 1_000_000.0,
+                        "billion" | "bln" => 1_000_000_000.0,
+                        "thousand" | "k" => 1_000.0,
+                        _ => 1.0,
+                    };
+                    value = v * m;
+                }
+            }
+            return Some(value);
         }
     }
-    buf.parse::<f64>().ok().map(|v| v * mult)
+    None
 }
 
-fn suffix_multiplier(s: &str) -> (f64, f64) {
-    let lower = s.to_ascii_lowercase();
-    let mult = if lower.ends_with('b') {
-        1_000_000_000.0
-    } else if lower.ends_with('m') {
-        1_000_000.0
-    } else if lower.ends_with('k') {
-        1_000.0
-    } else {
-        1.0
-    };
-    (1.0, mult)
+/// Split "10M"/"3.5B"/"15%" into (numeric-core, multiplier).
+fn split_magnitude(tok: &str) -> (&str, f64) {
+    let mut t = tok;
+    let mut mult = 1.0;
+    // Percent is discarded as a magnitude (15% == 15 for delta purposes).
+    if t.ends_with('%') {
+        t = &t[..t.len() - 1];
+    }
+    if t.len() >= 2 {
+        let last = t.chars().last().unwrap_or(' ');
+        let lower_last = last.to_ascii_lowercase();
+        match lower_last {
+            'm' if t[..t.len() - 1].chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+                mult = 1_000_000.0;
+                t = &t[..t.len() - 1];
+            }
+            'b' if t[..t.len() - 1].chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+                mult = 1_000_000_000.0;
+                t = &t[..t.len() - 1];
+            }
+            'k' if t[..t.len() - 1].chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+                mult = 1_000.0;
+                t = &t[..t.len() - 1];
+            }
+            _ => {}
+        }
+    }
+    (t, mult)
 }
