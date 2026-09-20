@@ -1,0 +1,26 @@
+LKOS benchmark
+  docs: 200  queries: 60  k: 10
+
+== Ingestion ==
+  corpus           : 200 documents, 2400 chunks, 1075079 chars
+  wall time        : 31.67 s
+  throughput       : 6.3 docs/s, 76 chunks/s
+
+== Semantic index (LSA) ==
+  trained on      : 2400 chunks in 0.06 s
+  re-embedded     : 2400 chunks in 0.10 s (22874 chunks/s)
+
+== Query latency (60 queries per mode) ==
+  lexical (BM25)       p50    3.47 ms   p95    4.26 ms   p99    4.94 ms
+  vector (LSA cosine)  p50    6.28 ms   p95    6.55 ms   p99    6.66 ms
+  hybrid (RRF+rerank)  p50    7.43 ms   p95    7.96 ms   p99    8.12 ms
+
+== Retrieval quality (hybrid, self-supervised) ==
+  Recall@10        : 1.000
+  MRR              : 1.000
+
+== Library stats ==
+  entities 2384 | mentions 22400 | claims 4800 | conflicts 9548 | relationships 10658 | provenance 29600
+
+Note: quality numbers are self-supervised (ground truth = generating document).
+They validate the fusion stack end-to-end; they are not a human benchmark.

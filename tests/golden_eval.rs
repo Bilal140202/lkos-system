@@ -8,6 +8,8 @@
 //! mode. Ablation rows are printed and asserted against honest floors —
 //! the point is to KNOW which complexity helps, per docs/EVALUATION.md.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use lkos::{Config, Lkos, QueryRequest, RetrievalMode};
 
 /// (filename, body) — four topics x four documents, two chunks each.

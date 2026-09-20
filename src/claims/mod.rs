@@ -23,6 +23,11 @@ use rusqlite::Connection;
 /// considered to disagree (5% — configurable per deployment later).
 pub const CONFLICT_DELTA_THRESHOLD: f32 = 0.05;
 
+/// Maximum prior claims compared per new claim (conflict-detection window).
+pub const MAX_COMPARISONS: usize = 40;
+/// Maximum conflict rows materialized per claim insert (pair explosion cap).
+pub const MAX_CONFLICTS_PER_CLAIM: usize = 4;
+
 /// Persist extracted claims for one chunk + run conflict detection against
 /// prior claims with identical (subject_key, predicate_key). Returns number
 /// of claims stored and number of new conflicts detected.
@@ -102,10 +107,26 @@ pub fn persist_claims(
         if value <= 0.0 {
             continue;
         }
+        // Indexed lookup (v0.1 rescanned every numeric claim per insert).
+        // Only the most recent MAX_COMPARISONS claims of the same metric are
+        // compared and at most MAX_CONFLICTS_PER_CLAIM conflict rows are
+        // materialized per claim: disagreement *existence* is the signal;
+        // enumerating every pair is quadratic and useless at corpus scale
+        // (measured: 2.4k claims -> ~500k pair rows, ingestion stall).
         let existing = dao::numeric_claims_for_keys(conn, &subject_key, &predicate_key)?;
-        for (other_id, ovalue, oyear) in existing {
+        let existing: Vec<_> = existing
+            .iter()
+            .rev()
+            .take(MAX_COMPARISONS)
+            .collect();
+        let mut conflicts_for_this_claim = 0usize;
+        for other in existing {
+            let (other_id, ovalue, oyear) = (other.0, other.1, other.2.clone());
             if other_id == claim_id || ovalue <= 0.0 {
                 continue;
+            }
+            if conflicts_for_this_claim >= MAX_CONFLICTS_PER_CLAIM {
+                break;
             }
             let delta = ((value - ovalue).abs()) / ovalue.max(value);
             if delta <= CONFLICT_DELTA_THRESHOLD as f64 {
@@ -152,6 +173,7 @@ pub fn persist_claims(
                     kind,
                 )?;
                 new_conflicts += 1;
+                conflicts_for_this_claim += 1;
             }
         }
     }

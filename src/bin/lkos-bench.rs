@@ -125,7 +125,9 @@ const YEARS: &[u32] = &[2021, 2022, 2023, 2024, 2025, 2026];
 
 /// Generate one synthetic markdown document. The document's identity is a
 /// (topic, org, year) triple; probe queries later cite the triple so the
-/// ground-truth document is known.
+/// ground-truth document is known. v0.9: paragraphs include SVO claim
+/// sentences ("{org} revenue was ${n}M in {year}") so the claim extractor
+/// and conflict engine are exercised too (v0.1's corpus yielded 0 claims).
 fn make_document(rng: &mut Rng, idx: usize) -> (String, String, String) {
     let topic = TOPICS[rng.below(TOPICS.len())];
     let org = ORGS[rng.below(ORGS.len())];
@@ -138,9 +140,13 @@ fn make_document(rng: &mut Rng, idx: usize) -> (String, String, String) {
     for p in 0..12 {
         let verb = VERBS[rng.below(VERBS.len())];
         let amount = 10_000 + rng.below(90_000);
+        let revenue = 5 + rng.below(60);
+        let launched = format!("Project {}", ["Aurora", "Borealis", "Cascade", "Delta", "Echo", "Fusion"][rng.below(6)]);
         body.push_str(&format!(
             "## Section {p}: {topic} procedure {p}\n\n\
              {org} {verb} structured review for {topic} procedure {p} in {year}. \
+             {org} revenue was ${revenue}M in {year} per the {topic} filing. \
+             {org} launched {launched} in {year}. \
              The approved budget for this procedure is ${amount} per quarter. \
              Owners must record every decision in the audit log and annotate \
              the retention class before the quarterly {topic} review closes.\n\n"
@@ -263,13 +269,17 @@ fn bench_quality(engine: &Lkos, args: Args) -> (f64, f64) {
     (recall_sum / counted as f64, mrr_sum / counted as f64)
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn main() {
     let args = parse_args();
     println!("LKOS benchmark");
     println!("  docs: {}  queries: {}  k: {}", args.docs, args.queries, args.k);
     println!();
 
-    let engine = Lkos::open_in_memory(Config::default()).expect("engine");
+    let mut cfg = Config::default();
+    cfg.semantic_min_chunks = 24;
+    cfg.lsa_dim = 64;
+    let engine = Lkos::open_in_memory(cfg).expect("engine");
     engine.set_llm(std::sync::Arc::new(lkos::llm::NullProvider));
 
     // -- ingestion ---------------------------------------------------------
@@ -277,7 +287,17 @@ fn main() {
     let docs_per_s = args.docs as f64 / secs;
     let chunks_per_s = chunks as f64 / secs;
 
-    // -- latency per mode ----------------------------------------------------
+    // -- semantic training (LSA) -------------------------------------------
+    let train_started = Instant::now();
+    let trained = engine.train_semantic_index().expect("train");
+    let train_secs = train_started.elapsed().as_secs_f64();
+    let reembed_started = Instant::now();
+    let migrated = engine
+        .reembed_stale_chunks("lsa-pmi-svd-v1", None)
+        .expect("reembed");
+    let reembed_secs = reembed_started.elapsed().as_secs_f64();
+
+    // -- latency per mode (post-training: dense channel = LSA) --------------
     let lex = bench_latency(&engine, args, RetrievalMode::LexicalOnly);
     let vec_ = bench_latency(&engine, args, RetrievalMode::VectorOnly);
     let hyb = bench_latency(&engine, args, RetrievalMode::Hybrid);
@@ -325,8 +345,21 @@ fn main() {
     println!("  wall time        : {:.2} s", secs);
     println!("  throughput       : {:.1} docs/s, {:.0} chunks/s", docs_per_s, chunks_per_s);
     println!();
+    println!("== Semantic index (LSA) ==");
+    if trained {
+        println!("  trained on      : {} chunks in {:.2} s", chunks, train_secs);
+        println!(
+            "  re-embedded     : {} chunks in {:.2} s ({:.0} chunks/s)",
+            migrated,
+            reembed_secs,
+            migrated as f64 / reembed_secs.max(1e-9)
+        );
+    } else {
+        println!("  training skipped (corpus below threshold)");
+    }
+    println!();
     println!("== Query latency ({} queries per mode) ==", args.queries);
-    for (name, xs) in [("lexical (BM25)", &lex), ("vector (hash embed)", &vec_), ("hybrid (RRF)", &hyb)] {
+    for (name, xs) in [("lexical (BM25)", &lex), ("vector (LSA cosine)", &vec_), ("hybrid (RRF+rerank)", &hyb)] {
         println!(
             "  {:<20} p50 {:>10}   p95 {:>10}   p99 {:>10}",
             name,

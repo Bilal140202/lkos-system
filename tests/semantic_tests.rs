@@ -2,6 +2,8 @@
 //! migration, mismatch detection, entity resolution management, and the
 //! evidence layer (conflict taxonomy).
 
+#![allow(clippy::field_reassign_with_default)]
+
 use lkos::{Config, Lkos, QueryRequest};
 use std::sync::Arc;
 
@@ -127,7 +129,7 @@ fn embedding_mismatch_is_detected_on_corrupted_model() {
     // with EmbeddingMismatch instead of silently mixing embedding spaces.
     let mut cfg = sem_config();
     cfg.semantic_min_chunks = 100; // prevent silent retrain on open path
-    let err = Lkos::open(&path, cfg).err().expect("must fail");
+    let err = Lkos::open(&path, cfg).expect_err("must fail");
     assert!(
         matches!(err, lkos::LkosError::EmbeddingMismatch { .. }),
         "expected EmbeddingMismatch, got {err:?}"

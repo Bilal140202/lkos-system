@@ -4,6 +4,8 @@
 //! the engine's response: rejection with a typed error, or safe ingestion
 //! with no corruption. The engine must never panic across the public API.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use lkos::{ingestion, Config, Lkos, QueryRequest};
 
 fn cfg() -> Config {
@@ -23,7 +25,7 @@ fn engine() -> Lkos {
 
 #[test]
 fn empty_input_rejected() {
-    let err = ingestion::extract("empty.txt", b"").err().expect("reject");
+    let err = ingestion::extract("empty.txt", b"").expect_err("reject");
     assert!(matches!(err, lkos::LkosError::InvalidInput(_)));
 }
 
@@ -32,14 +34,14 @@ fn oversize_input_rejected_at_cap() {
     // Cap is 64 MiB; 65 MiB of 'a' must be rejected, not allocated through
     // the whole pipeline.
     let big = vec![b'a'; ingestion::MAX_INPUT_BYTES + 1];
-    let err = ingestion::extract("big.txt", &big).err().expect("reject");
+    let err = ingestion::extract("big.txt", &big).expect_err("reject");
     assert!(matches!(err, lkos::LkosError::InvalidInput(_)), "got {err:?}");
 }
 
 #[test]
 fn invalid_utf8_rejected_cleanly() {
     let bytes: &[u8] = &[0xFF, 0xFE, 0x00, 0x01, 0x02];
-    let err = ingestion::extract("blob.txt", bytes).err().expect("reject");
+    let err = ingestion::extract("blob.txt", bytes).expect_err("reject");
     assert!(matches!(
         err,
         lkos::LkosError::InvalidInput(_) | lkos::LkosError::UnsupportedFileType(_)
