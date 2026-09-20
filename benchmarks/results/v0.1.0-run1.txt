@@ -1,0 +1,28 @@
+# lkos-bench v0.1.0 — 2026-09-20T17:58:36Z — release build, 2 vCPU container
+LKOS benchmark
+  docs: 300  queries: 150  k: 10
+
+{"docs":300,"chunks":3600,"ingest_s":37.466,"docs_per_s":8.0,"chunks_per_s":96.1,"lex_p50_us":2486,"lex_p95_us":4025,"lex_p99_us":4096,"vec_p50_us":14018,"vec_p95_us":14286,"vec_p99_us":14561,"hyb_p50_us":14818,"hyb_p95_us":16796,"hyb_p99_us":16961,"recall_at_k":1.000,"mrr":1.000,"k":10,"entities":3552,"claims":0,"relationships":7202,"provenance":15600}
+
+LKOS benchmark
+  docs: 300  queries: 150  k: 10
+
+== Ingestion ==
+  corpus           : 300 documents, 3600 chunks, 1202535 chars
+  wall time        : 37.22 s
+  throughput       : 8.1 docs/s, 97 chunks/s
+
+== Query latency (150 queries per mode) ==
+  lexical (BM25)       p50    2.54 ms   p95    3.94 ms   p99    4.20 ms
+  vector (hash embed)  p50   14.07 ms   p95   14.43 ms   p99   14.64 ms
+  hybrid (RRF)         p50   14.82 ms   p95   16.73 ms   p99   16.88 ms
+
+== Retrieval quality (hybrid, self-supervised) ==
+  Recall@10        : 1.000
+  MRR              : 1.000
+
+== Library stats ==
+  entities 3552 | mentions 12000 | claims 0 | conflicts 0 | relationships 7202 | provenance 15600
+
+Note: quality numbers are self-supervised (ground truth = generating document).
+They validate the fusion stack end-to-end; they are not a human benchmark.
