@@ -100,13 +100,15 @@ impl Store {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    /// Exclusive access for transactions.
-    pub(crate) fn conn(&mut self) -> &mut Connection {
+    /// Exclusive access for transactions. Public so applications embedding
+    /// LKOS can build custom tooling (backup scripts, migrations) on the
+    /// same connection pool discipline the engine uses.
+    pub fn conn(&mut self) -> &mut Connection {
         &mut self.conn
     }
 
     /// Read-only access.
-    pub(crate) fn read(&self) -> &Connection {
+    pub fn read(&self) -> &Connection {
         &self.conn
     }
 

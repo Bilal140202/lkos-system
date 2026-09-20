@@ -870,13 +870,17 @@ pub(crate) fn neighbors(
          ORDER BY r.weight DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![entity_id, limit as i64], |r| {
+        // last_document_id is NULL for edges rebuilt by the recompute path
+        // (no single contributing document) — tolerate it instead of
+        // silently dropping rows (v0.9 bug found by graph-delete test).
+        let last_doc: Option<i64> = r.get(5)?;
         let rel = RelationshipRecord {
             id: r.get(0)?,
             source_entity_id: r.get(1)?,
             target_entity_id: r.get(2)?,
             relationship_type: r.get(3)?,
             weight: r.get(4)?,
-            last_document_id: r.get(5)?,
+            last_document_id: last_doc.unwrap_or(0),
         };
         let ent = EntitySummary {
             id: r.get(6)?,

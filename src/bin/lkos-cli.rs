@@ -27,6 +27,8 @@ COMMANDS:
     delete <doc_id>             Delete a document and derived knowledge
     backup <dest>               Online backup of the database
     integrity                   Run SQLite integrity check
+    train                       Train the LSA semantic model + re-embed
+    reembed                     Re-embed chunks left on an older model
 
 OPTIONS:
     --db <path>                 Knowledge base path (default ./library.lkos)
@@ -293,6 +295,27 @@ fn run(
             for line in engine.integrity_check()? {
                 println!("{line}");
             }
+            Ok(())
+        }
+        "train" => {
+            // Train (or retrain) the corpus-trained semantic model and
+            // re-embed stale chunks so the whole library shares one space.
+            let engine = Lkos::open(&args.db, config)?;
+            let trained = engine.train_semantic_index()?;
+            if trained {
+                let migrated = engine.reembed_stale_chunks("lsa-pmi-svd-v1", None)?;
+                println!("semantic model trained; {migrated} chunks re-embedded");
+            } else {
+                println!("no semantic model trained (corpus below threshold or hashing provider)");
+            }
+            Ok(())
+        }
+        "reembed" => {
+            // Migrate any chunk whose embedding model differs from the
+            // active provider (model upgrade path).
+            let engine = Lkos::open(&args.db, config)?;
+            let n = engine.reembed_stale_chunks("lsa-pmi-svd-v1", None)?;
+            println!("{n} chunks migrated to the active embedding model");
             Ok(())
         }
         other => {

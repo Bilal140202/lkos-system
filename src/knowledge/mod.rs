@@ -104,6 +104,28 @@ fn re_org() -> &'static regex::Regex {
     })
 }
 
+/// Legal-suffix tokens that terminate an organization surface name.
+const ORG_SUFFIX_TOKENS: &[&str] = &[
+    "Inc", "Corp", "Corporation", "Ltd", "Limited", "LLC", "LLP", "GmbH", "AG", "PLC", "Group",
+    "Holdings", "University", "Institute", "Laboratory", "Laboratories", "Foundation",
+    "Association", "Systems", "Labs",
+];
+
+/// Truncate an org surface at the first legal-suffix token, keeping the
+/// minimal legal name. "Omega Corp partnered with Tau Corp" → "Omega Corp".
+fn truncate_at_suffix_boundary(surface: &str) -> String {
+    for (i, word) in surface.split_whitespace().enumerate() {
+        if i > 0 && ORG_SUFFIX_TOKENS.contains(&word) {
+            return surface
+                .split_whitespace()
+                .take(i + 1)
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    }
+    surface.to_string()
+}
+
 fn re_person() -> &'static regex::Regex {
     RE_PERSON.get_or_init(|| {
         regex::Regex::new(r"\b([A-Z][a-z]{1,15})\s+([A-Z][a-z]{1,15})\b").expect("person regex")
@@ -225,13 +247,17 @@ pub fn extract_entities(text: &str) -> Vec<EntityCandidate> {
         });
     }
     for m in re_org().find_iter(text) {
-        let name = m.as_str().trim().to_string();
+        // The lazy head is still fed by word sequences like "Omega Corp
+        // partnered with Tau Corp" — truncate at the FIRST suffix boundary
+        // so the surface is the minimal legal name ("Omega Corp").
+        let name = truncate_at_suffix_boundary(m.as_str().trim());
+        let name_end = m.start() + name.len();
         if name.len() > 2 {
             out.push(EntityCandidate {
                 surface: name,
                 entity_type: T_ORG.to_string(),
                 start: m.start(),
-                end: m.end(),
+                end: name_end,
                 confidence: 0.8,
             });
         }
@@ -408,7 +434,7 @@ fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
     // subject "Acme Corp", not "Revenue Acme Corp").
     let re_num = RE_NUM_CLAIM.get_or_init(|| {
         regex::Regex::new(
-            r"(?i)\b([A-Z][\w&.\-]*(?:[ \t]+[A-Za-z][\w&.\-]*){0,3})[ \t]+(revenue|profit|users|sales|growth|market share|arr|mrr|funding)[ \t]+(?:of|was|is|were|reached|hit|=|grew to)[ \t]+([$€£]?[ \t]?\d[\d.,]*[ \t]?[MBKm%]?)",
+            r"(?i)\b([A-Z][\w&.\-]*(?:[ \t]+[A-Za-z][\w&.\-]*){0,3})[ \t]+(revenue|profit|users|sales|growth|market share|arr|mrr|funding)[ \t]+(?:of|was|is|were|reached|hit|=|grew to)[ \t]+([$€£]?[ \t]?\d[\d.,]*[ \t]?(?:million|billion|thousand|[MBKm%])?)",
         )
         .expect("numeric claim regex")
     });
@@ -500,10 +526,10 @@ fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
 
 fn temporal_bounds(sentence: &str) -> (Option<String>, Option<String>) {
     let re_from = RE_VALID_FROM.get_or_init(|| {
-        regex::Regex::new(r"(?i)\b(?:since|from|as of|starting)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)").expect("vf regex")
+        regex::Regex::new(r"(?i)\b(?:since|from|as of|starting|in)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)").expect("vf regex")
     });
     let re_until = RE_VALID_UNTIL.get_or_init(|| {
-        regex::Regex::new(r"(?i)\b(?:until|through|till|ending)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)").expect("vu regex")
+        regex::Regex::new(r"(?i)\b(?:until|through|till|ending|by)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)").expect("vu regex")
     });
     let vf = re_from
         .captures(sentence)
