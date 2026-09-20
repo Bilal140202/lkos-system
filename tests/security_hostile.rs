@@ -35,7 +35,10 @@ fn oversize_input_rejected_at_cap() {
     // the whole pipeline.
     let big = vec![b'a'; ingestion::MAX_INPUT_BYTES + 1];
     let err = ingestion::extract("big.txt", &big).expect_err("reject");
-    assert!(matches!(err, lkos::LkosError::InvalidInput(_)), "got {err:?}");
+    assert!(
+        matches!(err, lkos::LkosError::InvalidInput(_)),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -66,7 +69,8 @@ fn zip_bomb_entry_size_capped() {
             .expect("start");
         // 4 MB of text is fine; the guard is exercised by the cap constant.
         for _ in 0..(1024 * 1024 / 16) {
-            w.write_all(b"<w:p><w:t>lorem ipsum dolor</w:t></w:p>").unwrap();
+            w.write_all(b"<w:p><w:t>lorem ipsum dolor</w:t></w:p>")
+                .unwrap();
         }
         let cursor = w.finish().expect("finish");
         cursor.into_inner()
@@ -93,12 +97,16 @@ fn hostile_html_never_leaks_script_bodies() {
 fn fts_injection_queries_are_safe() {
     let engine = engine();
     engine
-        .ingest_bytes("a.md", b"Kappa Ltd revenue was $7M in 2024. Kappa Ltd launched Helios.")
+        .ingest_bytes(
+            "a.md",
+            b"Kappa Ltd revenue was $7M in 2024. Kappa Ltd launched Helios.",
+        )
         .expect("ingest");
     for hostile in [
         "\"; DROP TABLE chunks; --",
         "revenue\" OR 1=1 --",
-        "NEAR((((", "*\"*",
+        "NEAR((((",
+        "*\"*",
         "' UNION SELECT 1 --",
         "\"unbalanced",
         "a\" OR b\" OR c\"",
@@ -106,11 +114,17 @@ fn fts_injection_queries_are_safe() {
         let resp = engine.query(QueryRequest::new(hostile).top_k(3));
         // Either an explicit error or empty results — never a panic/leak.
         if let Ok(r) = resp {
-            assert_eq!(r.hits.len() as i64, r.hits.len() as i64, "returned consistently");
+            assert_eq!(
+                r.hits.len() as i64,
+                r.hits.len() as i64,
+                "returned consistently"
+            );
         }
     }
     // The database must still work after all hostile queries.
-    let resp = engine.query(QueryRequest::new("Kappa revenue")).expect("works");
+    let resp = engine
+        .query(QueryRequest::new("Kappa revenue"))
+        .expect("works");
     assert!(!resp.hits.is_empty(), "fts index unharmed");
 }
 
@@ -118,9 +132,13 @@ fn fts_injection_queries_are_safe() {
 fn hostile_metadata_and_unicode_survive() {
     let engine = engine();
     let weird = "Z\u{0301}alg\u{0301}o Corp \u{1F9CA} emoji \u{FFFD} replacement \u{200B}zwsp\n\nRevenue was $1M in 2024.\n";
-    let doc = engine.ingest_bytes("weird.md", weird.as_bytes()).expect("ingest");
+    let doc = engine
+        .ingest_bytes("weird.md", weird.as_bytes())
+        .expect("ingest");
     assert!(doc.text_chars > 0);
-    let resp = engine.query(QueryRequest::new("revenue").top_k(3)).expect("query");
+    let resp = engine
+        .query(QueryRequest::new("revenue").top_k(3))
+        .expect("query");
     assert!(!resp.hits.is_empty());
 }
 
@@ -145,14 +163,22 @@ fn duplicate_ingestion_is_idempotent_under_hostile_repeats() {
     }
     let stats = engine.stats().expect("stats");
     assert_eq!(stats.documents, 1, "content-hash dedup");
-    assert_eq!(stats.chunks, 1, "no chunk duplication (body fits one chunk)");
+    assert_eq!(
+        stats.chunks, 1,
+        "no chunk duplication (body fits one chunk)"
+    );
 }
 
 #[test]
 fn query_api_rejects_empty_and_oversized_queries() {
     let engine = engine();
-    engine.ingest_bytes("a.md", b"Mu Corp revenue was $2M in 2024.").expect("ingest");
-    assert!(engine.query(QueryRequest::new("   ")).is_err(), "empty query rejected");
+    engine
+        .ingest_bytes("a.md", b"Mu Corp revenue was $2M in 2024.")
+        .expect("ingest");
+    assert!(
+        engine.query(QueryRequest::new("   ")).is_err(),
+        "empty query rejected"
+    );
     let huge = "word ".repeat(200_000);
     // Must either return or error — never hang or panic.
     let _ = engine.query(QueryRequest::new(&huge).top_k(1));
@@ -162,10 +188,16 @@ fn query_api_rejects_empty_and_oversized_queries() {
 fn document_delete_is_graph_correct_after_hostile_links() {
     let engine = engine();
     engine
-        .ingest_bytes("d1.md", b"Omega Corp acquired Sigma Corp in 2024. Omega Corp and Sigma Corp partnered.")
+        .ingest_bytes(
+            "d1.md",
+            b"Omega Corp acquired Sigma Corp in 2024. Omega Corp and Sigma Corp partnered.",
+        )
         .expect("ingest 1");
     engine
-        .ingest_bytes("d2.md", b"Omega Corp and Tau Corp co-founded a venture in 2023.")
+        .ingest_bytes(
+            "d2.md",
+            b"Omega Corp and Tau Corp co-founded a venture in 2023.",
+        )
         .expect("ingest 2");
     let before = engine.stats().expect("stats");
     assert!(before.relationships > 0, "co-occurrence edges exist");

@@ -61,25 +61,39 @@ fn lsa_trains_and_migrates_all_chunks() {
         engine.ingest_bytes(&name, body.as_bytes()).expect("ingest");
     }
     // Before training: dense channel runs on the hashing fallback.
-    assert!(!engine.stale_embedding_count().unwrap_or(1) > 0, "cold start has stale chunks");
+    assert!(
+        !engine.stale_embedding_count().unwrap_or(1) > 0,
+        "cold start has stale chunks"
+    );
 
     let trained = engine.train_semantic_index().expect("train");
     assert!(trained, "model trains above the chunk threshold");
-    let migrated = engine.reembed_stale_chunks("lsa-pmi-svd-v1", None).expect("reembed");
+    let migrated = engine
+        .reembed_stale_chunks("lsa-pmi-svd-v1", None)
+        .expect("reembed");
     assert!(migrated >= 16, "all corpus chunks migrated, got {migrated}");
-    assert_eq!(engine.stale_embedding_count().expect("stale"), 0, "all chunks migrated to LSA");
+    assert_eq!(
+        engine.stale_embedding_count().expect("stale"),
+        0,
+        "all chunks migrated to LSA"
+    );
 
     // Second open must restore the trained model without error or mismatch.
     let path = std::env::temp_dir().join(format!("lkos-restore-{}.lkos", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let engine2 = Lkos::open(&path, sem_config()).expect("open fresh");
     for (name, body) in semantic_corpus() {
-        engine2.ingest_bytes(&name, body.as_bytes()).expect("ingest");
+        engine2
+            .ingest_bytes(&name, body.as_bytes())
+            .expect("ingest");
     }
     assert!(engine2.train_semantic_index().expect("train2"));
     drop(engine2);
     let engine3 = Lkos::open(&path, sem_config()).expect("reopen");
-    assert!(engine3.query(QueryRequest::new("revenue profit")).is_ok(), "reopen with trained model works");
+    assert!(
+        engine3.query(QueryRequest::new("revenue profit")).is_ok(),
+        "reopen with trained model works"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -96,7 +110,9 @@ fn semantic_query_recovers_paraphrase_not_lexical() {
         engine.ingest_bytes(&name, body.as_bytes()).expect("ingest");
     }
     engine.train_semantic_index().expect("train");
-    engine.reembed_stale_chunks("lsa-pmi-svd-v1", None).expect("reembed");
+    engine
+        .reembed_stale_chunks("lsa-pmi-svd-v1", None)
+        .expect("reembed");
 
     let resp = engine
         .query(QueryRequest::new("database query throughput").top_k(4))
@@ -104,7 +120,9 @@ fn semantic_query_recovers_paraphrase_not_lexical() {
     assert!(!resp.hits.is_empty());
     let top_texts: Vec<String> = resp.hits.iter().take(2).map(|h| h.text.clone()).collect();
     assert!(
-        top_texts.iter().any(|t| t.contains("query") || t.contains("database") || t.contains("Throughput")),
+        top_texts
+            .iter()
+            .any(|t| t.contains("query") || t.contains("database") || t.contains("Throughput")),
         "topical chunks rank top after training; got {top_texts:?}"
     );
 }
@@ -123,7 +141,10 @@ fn embedding_mismatch_is_detected_on_corrupted_model() {
     // Corrupt the persisted model (simulated partial-loss scenario).
     {
         let mut store = lkos::storage::Store::open(&path).expect("store");
-        store.conn().execute("DELETE FROM lsa_terms", []).expect("wipe model");
+        store
+            .conn()
+            .execute("DELETE FROM lsa_terms", [])
+            .expect("wipe model");
     }
     // Reopen: the index says lsa-pmi-svd-v1 but no model loads — must fail
     // with EmbeddingMismatch instead of silently mixing embedding spaces.
@@ -147,13 +168,22 @@ fn entity_alias_and_merge_apis_work() {
         )
         .expect("ingest");
     engine
-        .ingest_bytes("b.md", b"MSFT stock rose after the announcement by Microsoft Corp.")
+        .ingest_bytes(
+            "b.md",
+            b"MSFT stock rose after the announcement by Microsoft Corp.",
+        )
         .expect("ingest");
 
-    let eid = engine.entity_id_by_name("Microsoft").expect("lookup").expect("exists");
+    let eid = engine
+        .entity_id_by_name("Microsoft")
+        .expect("lookup")
+        .expect("exists");
     engine.add_entity_alias(eid, "MSFT").expect("alias");
     // Alias resolves to the same entity.
-    let eid2 = engine.entity_id_by_name("MSFT").expect("lookup").expect("alias resolves");
+    let eid2 = engine
+        .entity_id_by_name("MSFT")
+        .expect("lookup")
+        .expect("alias resolves");
     assert_eq!(eid, eid2);
 
     // Merge a false split (if the regexes split "Microsoft" into two rows,
@@ -162,9 +192,14 @@ fn entity_alias_and_merge_apis_work() {
     if recs.len() >= 2 {
         let survivor = recs[0].id;
         let victim = recs[1].id;
-        engine.merge_entities(survivor, victim, "test consolidation").expect("merge");
+        engine
+            .merge_entities(survivor, victim, "test consolidation")
+            .expect("merge");
         let after = engine.list_entities(10).expect("list");
-        assert!(!after.iter().any(|r| r.id == victim), "merged entity removed");
+        assert!(
+            !after.iter().any(|r| r.id == victim),
+            "merged entity removed"
+        );
     }
 }
 
@@ -172,10 +207,16 @@ fn entity_alias_and_merge_apis_work() {
 fn conflict_taxonomy_classifies_temporal_and_negation() {
     let engine = Lkos::open_in_memory(sem_config()).expect("open");
     engine
-        .ingest_bytes("x.md", b"Acme Corp revenue was $10M in 2023. Acme Corp revenue was $25M in 2024.")
+        .ingest_bytes(
+            "x.md",
+            b"Acme Corp revenue was $10M in 2023. Acme Corp revenue was $25M in 2024.",
+        )
         .expect("ingest cross-period");
     engine
-        .ingest_bytes("y.md", b"Beta Ltd revenue was $30M in 2024. Beta Ltd revenue was $12M in 2024.")
+        .ingest_bytes(
+            "y.md",
+            b"Beta Ltd revenue was $30M in 2024. Beta Ltd revenue was $12M in 2024.",
+        )
         .expect("ingest same-period");
     let conflicts = engine.conflicts(20).expect("conflicts");
     assert!(!conflicts.is_empty(), "conflicts detected");
@@ -194,7 +235,9 @@ fn conflict_taxonomy_classifies_temporal_and_negation() {
         "2023 vs 2024 revenue is cross-period"
     );
     assert!(
-        conflicts.iter().any(|c| c.conflict_kind == "same-period-disagreement"),
+        conflicts
+            .iter()
+            .any(|c| c.conflict_kind == "same-period-disagreement"),
         "2024 vs 2024 disagreement is same-period"
     );
 }
@@ -204,7 +247,10 @@ fn unit_normalization_detects_disguised_conflicts() {
     let engine = Lkos::open_in_memory(sem_config()).expect("open");
     // "$10 million" and "$10M" and "10,000,000" must normalize to one value.
     engine
-        .ingest_bytes("a.md", b"Gamma Inc revenue was $10 million in 2024. Gamma Inc revenue was $10M in 2024.")
+        .ingest_bytes(
+            "a.md",
+            b"Gamma Inc revenue was $10 million in 2024. Gamma Inc revenue was $10M in 2024.",
+        )
         .expect("ingest");
     let conflicts = engine.conflicts(10).expect("conflicts");
     assert!(
@@ -244,18 +290,32 @@ fn jobs_support_backoff_dead_letter_and_cancel() {
         rusqlite::params![jid],
     )
     .expect("rewind");
-    let job = jobs::claim_next(conn).expect("claim").expect("claimable after backoff");
+    let job = jobs::claim_next(conn)
+        .expect("claim")
+        .expect("claimable after backoff");
     let requeued = jobs::fail_and_maybe_retry(conn, &job, "boom 2", 1, 1).expect("retry");
     let attempts: i64 = conn
-        .query_row("SELECT attempts FROM jobs WHERE id = ?1", rusqlite::params![jid], |r| r.get(0))
+        .query_row(
+            "SELECT attempts FROM jobs WHERE id = ?1",
+            rusqlite::params![jid],
+            |r| r.get(0),
+        )
         .unwrap();
     let max_attempts: i64 = conn
-        .query_row("SELECT max_attempts FROM jobs WHERE id = ?1", rusqlite::params![jid], |r| r.get(0))
+        .query_row(
+            "SELECT max_attempts FROM jobs WHERE id = ?1",
+            rusqlite::params![jid],
+            |r| r.get(0),
+        )
         .unwrap();
     if attempts >= max_attempts {
         assert!(!requeued, "terminal failure dead-letters");
         let status: String = conn
-            .query_row("SELECT status FROM jobs WHERE id = ?1", rusqlite::params![jid], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM jobs WHERE id = ?1",
+                rusqlite::params![jid],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "failed");
     } else {
@@ -267,18 +327,28 @@ fn jobs_support_backoff_dead_letter_and_cancel() {
     let cancelled = jobs::cancel_job(conn, jid2).expect("cancel");
     assert!(cancelled, "pending job cancelled");
     let next = jobs::claim_next(conn).expect("claim");
-    assert!(next.is_none() || next.as_ref().map(|j| j.id) != Some(jid2), "cancelled job never claims");
+    assert!(
+        next.is_none() || next.as_ref().map(|j| j.id) != Some(jid2),
+        "cancelled job never claims"
+    );
 }
 
 #[test]
 fn synchronous_engine_end_to_end_with_semantics_and_delete() {
     let engine = Lkos::open_in_memory(sem_config()).expect("open");
     let doc = engine
-        .ingest_bytes("q.md", b"Epsilon Systems revenue was $10M in 2024. Epsilon Systems launched Orion in 2024.")
+        .ingest_bytes(
+            "q.md",
+            b"Epsilon Systems revenue was $10M in 2024. Epsilon Systems launched Orion in 2024.",
+        )
         .expect("ingest");
     engine.train_semantic_index().expect("train");
-    engine.reembed_stale_chunks("lsa-pmi-svd-v1", None).expect("reembed");
-    let resp = engine.query(QueryRequest::new("Orion launch").top_k(3)).expect("query");
+    engine
+        .reembed_stale_chunks("lsa-pmi-svd-v1", None)
+        .expect("reembed");
+    let resp = engine
+        .query(QueryRequest::new("Orion launch").top_k(3))
+        .expect("query");
     assert!(!resp.hits.is_empty());
     engine.delete_document(doc.id).expect("delete");
     let stats = engine.stats().expect("stats");
@@ -296,7 +366,12 @@ fn arc_shared_engine_queries_concurrently() {
         .map(|i| {
             let e = engine.clone();
             std::thread::spawn(move || {
-                let q = ["revenue profit", "gradient network", "query index", "plants sunlight"][i];
+                let q = [
+                    "revenue profit",
+                    "gradient network",
+                    "query index",
+                    "plants sunlight",
+                ][i];
                 e.query(QueryRequest::new(q).top_k(3)).expect("query")
             })
         })

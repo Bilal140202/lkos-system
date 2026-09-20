@@ -10,8 +10,8 @@ use lkos::embeddings::{cosine, tokenize, EmbeddingProvider, HashingEmbedder};
 use lkos::entities::canonical_key;
 use lkos::ingestion;
 use lkos::knowledge::{
-    extract_claims, extract_entities, extract_keywords, ko_from_json, ko_to_json,
-    split_sentences, T_ORG, T_PERSON,
+    extract_claims, extract_entities, extract_keywords, ko_from_json, ko_to_json, split_sentences,
+    T_ORG, T_PERSON,
 };
 use lkos::query::{assemble_context, plan};
 use lkos::retrieval::fts_escape;
@@ -33,12 +33,20 @@ fn markdown_chunking_respects_structure() {
     );
     let chunks = chunk_document(&md, DocType::Markdown, &cfg);
     assert!(!chunks.is_empty());
-    assert!(chunks.iter().all(|c| c.text.chars().count() <= cfg.chunk_max_chars + 50));
+    assert!(chunks
+        .iter()
+        .all(|c| c.text.chars().count() <= cfg.chunk_max_chars + 50));
     // Heading chunks carry their section title forward.
     let with_sections = chunks.iter().filter(|c| c.section_title.is_some()).count();
-    assert!(with_sections > 0, "markdown headings must propagate section titles");
+    assert!(
+        with_sections > 0,
+        "markdown headings must propagate section titles"
+    );
     // Offsets must be ordered and non-decreasing.
-    let offs: Vec<(usize, usize)> = chunks.iter().map(|c| (c.start_offset, c.end_offset)).collect();
+    let offs: Vec<(usize, usize)> = chunks
+        .iter()
+        .map(|c| (c.start_offset, c.end_offset))
+        .collect();
     for w in offs.windows(2) {
         assert!(w[0].0 <= w[1].0, "chunk offsets must be ordered");
     }
@@ -63,7 +71,10 @@ fn beta(x: u32) -> u32 {
 struct Gamma { field: u32 }
 "#;
     let chunks = chunk_document(code, DocType::Code, &cfg);
-    assert!(chunks.iter().any(|c| c.text.contains("fn beta")), "function bodies must not be split mid-unit");
+    assert!(
+        chunks.iter().any(|c| c.text.contains("fn beta")),
+        "function bodies must not be split mid-unit"
+    );
     assert!(chunks.iter().any(|c| c.text.contains("struct Gamma")));
 }
 
@@ -83,7 +94,9 @@ fn chunk_hash_is_stable() {
 #[test]
 fn hashing_embedder_is_deterministic_and_semantically_useful() {
     let emb = HashingEmbedder::new(256);
-    let q = emb.embed_batch(&["vacation policy days off"]).expect("embed");
+    let q = emb
+        .embed_batch(&["vacation policy days off"])
+        .expect("embed");
     let docs = emb
         .embed_batch(&[
             "employees receive paid vacation leave",
@@ -92,9 +105,14 @@ fn hashing_embedder_is_deterministic_and_semantically_useful() {
         .expect("embed");
     let sim_on_topic = cosine(&q[0], &docs[0]);
     let sim_off_topic = cosine(&q[0], &docs[1]);
-    assert!(sim_on_topic > sim_off_topic, "lexical hashing must separate topics");
+    assert!(
+        sim_on_topic > sim_off_topic,
+        "lexical hashing must separate topics"
+    );
     // Determinism.
-    let again = emb.embed_batch(&["vacation policy days off"]).expect("embed");
+    let again = emb
+        .embed_batch(&["vacation policy days off"])
+        .expect("embed");
     assert_eq!(q[0], again[0]);
     // Unit norm (cosine with itself ≈ 1).
     assert!((cosine(&q[0], &q[0]) - 1.0).abs() < 1e-4);
@@ -103,7 +121,10 @@ fn hashing_embedder_is_deterministic_and_semantically_useful() {
 #[test]
 fn tokenizer_lowercases_and_drops_punctuation() {
     let toks = tokenize("Hello, World! It's RRF-based.");
-    assert!(toks.iter().all(|t| t.chars().all(|c| c.is_alphanumeric())), "punctuation splits tokens: {toks:?}");
+    assert!(
+        toks.iter().all(|t| t.chars().all(|c| c.is_alphanumeric())),
+        "punctuation splits tokens: {toks:?}"
+    );
     assert!(toks.contains(&"hello".to_string()));
     assert!(toks.contains(&"rrf".to_string()), "hyphens split: {toks:?}");
     assert!(toks.contains(&"based".to_string()));
@@ -118,7 +139,11 @@ fn canonical_key_strips_legal_suffixes_and_case() {
     assert_eq!(canonical_key("OpenAI Inc."), canonical_key("openai"));
     assert_eq!(canonical_key("Acme Corp."), canonical_key("ACME"));
     assert_eq!(canonical_key("Northwind Ltd"), "northwind");
-    assert_eq!(canonical_key("Apple"), canonical_key("Apple Inc"), "legal suffix must not change identity");
+    assert_eq!(
+        canonical_key("Apple"),
+        canonical_key("Apple Inc"),
+        "legal suffix must not change identity"
+    );
     assert_eq!(canonical_key("  Open  AI  "), "open ai");
 }
 
@@ -126,8 +151,12 @@ fn canonical_key_strips_legal_suffixes_and_case() {
 fn entity_extraction_finds_typed_candidates() {
     let text = "Jane Smith visited Acme Corp on 2024-03-01 and paid $10M, 25% of the budget.";
     let cands = extract_entities(text);
-    assert!(cands.iter().any(|c| c.surface == "Jane Smith" && c.entity_type == T_PERSON));
-    assert!(cands.iter().any(|c| c.entity_type == T_ORG && c.surface.contains("Acme")));
+    assert!(cands
+        .iter()
+        .any(|c| c.surface == "Jane Smith" && c.entity_type == T_PERSON));
+    assert!(cands
+        .iter()
+        .any(|c| c.entity_type == T_ORG && c.surface.contains("Acme")));
     assert!(cands.iter().any(|c| c.entity_type == "money"));
     assert!(cands.iter().any(|c| c.entity_type == "percent"));
     assert!(cands.iter().any(|c| c.entity_type == "date"));
@@ -139,17 +168,35 @@ fn entity_extraction_finds_typed_candidates() {
 
 #[test]
 fn temporal_detection_and_matching() {
-    assert_eq!(detect_temporal("what changed in 2024"), TemporalConstraint::Year(2024));
+    assert_eq!(
+        detect_temporal("what changed in 2024"),
+        TemporalConstraint::Year(2024)
+    );
     assert_eq!(
         detect_temporal("revenue between 2022 and 2024"),
         TemporalConstraint::Range(2022, 2024)
     );
-    assert_eq!(detect_temporal("latest revenue"), TemporalConstraint::Latest);
-    assert_eq!(detect_temporal("how does billing work"), TemporalConstraint::None);
+    assert_eq!(
+        detect_temporal("latest revenue"),
+        TemporalConstraint::Latest
+    );
+    assert_eq!(
+        detect_temporal("how does billing work"),
+        TemporalConstraint::None
+    );
 
-    assert!(matches_constraint("profit in 2024 was high", &TemporalConstraint::Year(2024)));
-    assert!(!matches_constraint("profit in 2019 was low", &TemporalConstraint::Year(2024)));
-    assert!(matches_constraint("years 2022 and 2023", &TemporalConstraint::Range(2022, 2024)));
+    assert!(matches_constraint(
+        "profit in 2024 was high",
+        &TemporalConstraint::Year(2024)
+    ));
+    assert!(!matches_constraint(
+        "profit in 2019 was low",
+        &TemporalConstraint::Year(2024)
+    ));
+    assert!(matches_constraint(
+        "years 2022 and 2023",
+        &TemporalConstraint::Range(2022, 2024)
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -171,10 +218,15 @@ fn knowledge_object_json_roundtrip() {
 fn claim_extraction_finds_svo_patterns() {
     let claims = extract_claims("Acme Corp revenue was $10M in 2024. Bob Lee joined Initech LLC.");
     assert!(
-        claims.iter().any(|c| c.predicate == "revenue" && c.object.contains("10")),
+        claims
+            .iter()
+            .any(|c| c.predicate == "revenue" && c.object.contains("10")),
         "numeric metric claim expected"
     );
-    assert!(claims.iter().any(|c| c.predicate == "joined"), "release/action claim expected");
+    assert!(
+        claims.iter().any(|c| c.predicate == "joined"),
+        "release/action claim expected"
+    );
 }
 
 #[test]
@@ -185,9 +237,14 @@ fn sentence_splitter_handles_abbreviations_reasonably() {
 
 #[test]
 fn keywords_exclude_stopwords() {
-    let kws = extract_keywords("the database and the database index and the query planner", 5);
+    let kws = extract_keywords(
+        "the database and the database index and the query planner",
+        5,
+    );
     assert!(!kws.is_empty());
-    assert!(kws.iter().all(|(w, _)| !["the", "and"].contains(&w.as_str())));
+    assert!(kws
+        .iter()
+        .all(|(w, _)| !["the", "and"].contains(&w.as_str())));
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +280,10 @@ fn assemble_context_orders_citations_and_respects_per_doc_cap() {
     let ctx = assemble_context(&hits, 10_000, 1);
     assert!(ctx.contains("[1] a.md"));
     assert!(ctx.contains("[3] b.md"));
-    assert!(!ctx.contains("[2] a.md"), "per-document cap must drop the second a.md chunk");
+    assert!(
+        !ctx.contains("[2] a.md"),
+        "per-document cap must drop the second a.md chunk"
+    );
     assert!(ctx.contains("CITATIONS:"));
 }
 
@@ -245,7 +305,10 @@ fn planner_weights_shift_by_intent() {
 fn normalization_preserves_structure_and_cleanwhitespace() {
     let raw = "# Heading\r\n\nSome *text* here.\n\n\n\n\n\nEnd.";
     let text = ingestion::normalize(raw);
-    assert!(text.contains("# Heading"), "markdown structure must survive normalization: {text}");
+    assert!(
+        text.contains("# Heading"),
+        "markdown structure must survive normalization: {text}"
+    );
     assert!(text.contains("Some *text* here."));
     assert!(!text.contains('\r'), "CRLF must be normalized to LF");
     assert!(!text.contains("\n\n\n\n"), "blank runs must collapse");
@@ -261,10 +324,24 @@ fn content_hash_matches_sha256_length() {
 
 #[test]
 fn extract_detects_doc_types_by_extension() {
-    assert_eq!(ingestion::extract("a.md", b"# hi").expect("md").doc_type, DocType::Markdown);
-    assert_eq!(ingestion::extract("b.rs", b"fn f(){}").expect("rs").doc_type, DocType::Code);
-    assert_eq!(ingestion::extract("c.json", b"{}").expect("json").doc_type, DocType::Data);
-    assert_eq!(ingestion::extract("d.txt", b"hello").expect("txt").doc_type, DocType::Text);
+    assert_eq!(
+        ingestion::extract("a.md", b"# hi").expect("md").doc_type,
+        DocType::Markdown
+    );
+    assert_eq!(
+        ingestion::extract("b.rs", b"fn f(){}")
+            .expect("rs")
+            .doc_type,
+        DocType::Code
+    );
+    assert_eq!(
+        ingestion::extract("c.json", b"{}").expect("json").doc_type,
+        DocType::Data
+    );
+    assert_eq!(
+        ingestion::extract("d.txt", b"hello").expect("txt").doc_type,
+        DocType::Text
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -297,8 +374,14 @@ fn golden_retrieval_miniature_corpus() {
     ];
     let mut hits_at_1 = 0usize;
     for (query, expected) in probes {
-        let resp = engine.query(QueryRequest::new(*query).top_k(3)).expect("query");
-        let top = resp.hits.first().map(|h| h.document.as_str()).unwrap_or("NONE");
+        let resp = engine
+            .query(QueryRequest::new(*query).top_k(3))
+            .expect("query");
+        let top = resp
+            .hits
+            .first()
+            .map(|h| h.document.as_str())
+            .unwrap_or("NONE");
         if top == *expected {
             hits_at_1 += 1;
         } else {
@@ -308,5 +391,9 @@ fn golden_retrieval_miniature_corpus() {
             );
         }
     }
-    assert_eq!(hits_at_1, probes.len(), "all golden probes must hit at rank 1");
+    assert_eq!(
+        hits_at_1,
+        probes.len(),
+        "all golden probes must hit at rank 1"
+    );
 }

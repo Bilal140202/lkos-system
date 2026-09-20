@@ -255,9 +255,8 @@ pub(crate) fn stale_embedding_chunks(
     current: &str,
     limit: usize,
 ) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM chunks WHERE embedding_model IS NOT ?1 ORDER BY id LIMIT ?2",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id FROM chunks WHERE embedding_model IS NOT ?1 ORDER BY id LIMIT ?2")?;
     let rows = stmt.query_map(params![current, limit as i64], |r| r.get(0))?;
     let mut out = Vec::new();
     for r in rows {
@@ -340,7 +339,8 @@ pub(crate) fn all_embeddings(
             filter_sql_parts(f)
         ),
         None => "SELECT c.id, c.embedding FROM chunks c \
-             WHERE c.embedding_model = ?M AND c.embedding IS NOT NULL".to_string(),
+             WHERE c.embedding_model = ?M AND c.embedding IS NOT NULL"
+            .to_string(),
     };
     let sql = sql.replace("?M", "?1");
     let mut stmt = conn.prepare(&sql)?;
@@ -349,9 +349,9 @@ pub(crate) fn all_embeddings(
         all.extend(filter_params(f));
     }
     bind_params(&mut stmt, &all)?;
-    let rows = stmt.raw_query().mapped(|r| {
-        Ok((r.get::<_, i64>(0)?, bytes_to_f32(&r.get::<_, Vec<u8>>(1)?)))
-    });
+    let rows = stmt
+        .raw_query()
+        .mapped(|r| Ok((r.get::<_, i64>(0)?, bytes_to_f32(&r.get::<_, Vec<u8>>(1)?))));
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -598,7 +598,10 @@ pub(crate) fn get_entity(conn: &Connection, entity_id: i64) -> Result<EntityReco
 
 /// Entity summaries matching a name fragment (used by the planner).
 #[allow(dead_code)] // Reserved API surface for v0.2 entity search.
-pub(crate) fn find_entities_by_name(conn: &Connection, fragment: &str) -> Result<Vec<EntitySummary>> {
+pub(crate) fn find_entities_by_name(
+    conn: &Connection,
+    fragment: &str,
+) -> Result<Vec<EntitySummary>> {
     let mut stmt = conn.prepare(
         "SELECT id, display_name, entity_type, mention_count FROM entities
          WHERE lower(display_name) LIKE ('%' || lower(?1) || '%')
@@ -636,9 +639,8 @@ pub(crate) fn entities_for_document(conn: &Connection, doc_id: i64) -> Result<Ve
 
 /// Documents mentioning an entity (via mentions).
 pub(crate) fn documents_for_entity(conn: &Connection, entity_id: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT document_id FROM entity_mentions WHERE entity_id = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT document_id FROM entity_mentions WHERE entity_id = ?1")?;
     let rows = stmt.query_map(params![entity_id], |r| r.get(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -840,7 +842,11 @@ pub(crate) fn upsert_relationship(
     rel_type: &str,
     document_id: i64,
 ) -> Result<()> {
-    let (a, b) = if source <= target { (source, target) } else { (target, source) };
+    let (a, b) = if source <= target {
+        (source, target)
+    } else {
+        (target, source)
+    };
     conn.execute(
         "INSERT INTO relationships (source_entity_id, target_entity_id, relationship_type, weight, \
          first_document_id, last_document_id, created_at)
@@ -993,7 +999,13 @@ pub(crate) fn claim_next_atomic(conn: &mut Connection) -> Result<Option<(i64, St
              WHERE status = 'pending' AND (run_at IS NULL OR run_at <= ?1)
              ORDER BY priority ASC, id ASC LIMIT 1",
             params![now()],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()?;
     if let Some((id, kind, payload)) = row {
@@ -1143,27 +1155,22 @@ pub(crate) fn delete_mentions_for_doc(conn: &Connection, doc_id: i64) -> Result<
 
 /// Delete all claims recorded for a document (conflicts cascade via FK).
 pub(crate) fn delete_claims_for_doc(conn: &Connection, doc_id: i64) -> Result<()> {
-    conn.execute(
-        "DELETE FROM claims WHERE document_id = ?1",
-        params![doc_id],
-    )?;
+    conn.execute("DELETE FROM claims WHERE document_id = ?1", params![doc_id])?;
     Ok(())
 }
 
 /// Distinct entity ids mentioned by a document.
 pub(crate) fn distinct_entities_for_doc(conn: &Connection, doc_id: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT entity_id FROM entity_mentions WHERE document_id = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT entity_id FROM entity_mentions WHERE document_id = ?1")?;
     let rows = stmt.query_map(params![doc_id], |r| r.get(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// Entity ids mentioned in one chunk.
 pub(crate) fn entity_ids_for_chunk(conn: &Connection, chunk_id: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT entity_id FROM entity_mentions WHERE chunk_id = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT entity_id FROM entity_mentions WHERE chunk_id = ?1")?;
     let rows = stmt.query_map(params![chunk_id], |r| r.get(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -1221,7 +1228,11 @@ pub(crate) fn recompute_relationships_for_entities(
         if i > 0 {
             sql.push_str(" OR ");
         }
-        sql.push_str(&format!("source_entity_id = ?{} OR target_entity_id = ?{}", i + 1, i + 1));
+        sql.push_str(&format!(
+            "source_entity_id = ?{} OR target_entity_id = ?{}",
+            i + 1,
+            i + 1
+        ));
     }
     {
         let params_ref: Vec<Box<dyn rusqlite::ToSql>> = entity_ids
@@ -1254,13 +1265,15 @@ pub(crate) fn recompute_relationships_for_entities(
         .iter()
         .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>)
         .collect();
-    let rows = stmt.query(rusqlite::params_from_iter(params_ref))?.mapped(|r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, i64>(2)?,
-        ))
-    });
+    let rows = stmt
+        .query(rusqlite::params_from_iter(params_ref))?
+        .mapped(|r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        });
     let mut pairs = Vec::new();
     for r in rows {
         pairs.push(r?);
@@ -1279,7 +1292,11 @@ pub(crate) fn upsert_relationship_weighted(
     rel_type: &str,
     weight: f32,
 ) -> Result<()> {
-    let (a, b) = if source <= target { (source, target) } else { (target, source) };
+    let (a, b) = if source <= target {
+        (source, target)
+    } else {
+        (target, source)
+    };
     conn.execute(
         "INSERT INTO relationships (source_entity_id, target_entity_id, relationship_type, weight, created_at)
          VALUES (?1,?2,?3,?4,?5)
@@ -1365,7 +1382,11 @@ pub(crate) fn parse_first_number(s: &str) -> Option<f64> {
     let tokens: Vec<String> = s
         .split(|c: char| c.is_whitespace() || matches!(c, '$' | '€' | '£' | ',' | ';'))
         .filter(|t| !t.is_empty())
-        .map(|t| t.trim().trim_matches(['.', '!', '?', ')', '(', ':']).to_string())
+        .map(|t| {
+            t.trim()
+                .trim_matches(['.', '!', '?', ')', '(', ':'])
+                .to_string()
+        })
         .filter(|t| !t.is_empty())
         .collect();
     for (i, tok) in tokens.iter().enumerate() {
@@ -1403,15 +1424,27 @@ fn split_magnitude(tok: &str) -> (&str, f64) {
         let last = t.chars().last().unwrap_or(' ');
         let lower_last = last.to_ascii_lowercase();
         match lower_last {
-            'm' if t[..t.len() - 1].chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+            'm' if t[..t.len() - 1]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit()) =>
+            {
                 mult = 1_000_000.0;
                 t = &t[..t.len() - 1];
             }
-            'b' if t[..t.len() - 1].chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+            'b' if t[..t.len() - 1]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit()) =>
+            {
                 mult = 1_000_000_000.0;
                 t = &t[..t.len() - 1];
             }
-            'k' if t[..t.len() - 1].chars().next().is_some_and(|c| c.is_ascii_digit()) => {
+            'k' if t[..t.len() - 1]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit()) =>
+            {
                 mult = 1_000.0;
                 t = &t[..t.len() - 1];
             }

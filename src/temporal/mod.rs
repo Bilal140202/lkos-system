@@ -219,9 +219,12 @@ mod tests {
 
     #[test]
     fn parses_iso_month_quarter_and_year() {
-        let dates: Vec<NormalDate> = extract_dates("Q3 2024 report dated 2024-06-01, filed June 2024, in 2024").collect();
+        let dates: Vec<NormalDate> =
+            extract_dates("Q3 2024 report dated 2024-06-01, filed June 2024, in 2024").collect();
         assert!(dates.iter().any(|d| d.year == 2024 && d.month == 7)); // Q3 start
-        assert!(dates.iter().any(|d| d.year == 2024 && d.month == 6 && d.day == 1 && d.precise));
+        assert!(dates
+            .iter()
+            .any(|d| d.year == 2024 && d.month == 6 && d.day == 1 && d.precise));
         assert!(dates.iter().any(|d| d.year == 2024 && d.month == 6)); // "June 2024"
     }
 

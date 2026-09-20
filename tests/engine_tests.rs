@@ -42,27 +42,46 @@ Acme Corp announced Project Falcon during the same quarter.
 #[test]
 fn ingest_creates_chunks_embeddings_and_provenance() {
     let engine = mem();
-    let info = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    let info = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
     assert_eq!(info.filename, "handbook.md");
     assert_eq!(info.doc_type, "markdown");
     assert_eq!(info.readiness_state, "ready");
-    assert!(info.chunk_count >= 1, "expected at least one chunk, got {}", info.chunk_count);
+    assert!(
+        info.chunk_count >= 1,
+        "expected at least one chunk, got {}",
+        info.chunk_count
+    );
     assert_eq!(info.content_hash.len(), 64, "sha256 hex expected");
 
     let stats = engine.stats().expect("stats");
     assert_eq!(stats.documents, 1);
     assert_eq!(stats.chunks, info.chunk_count);
-    assert!(stats.provenance_records >= info.chunk_count, "every chunk needs a provenance row");
-    assert!(stats.entities > 0, "Acme Corp should be extracted as an entity");
+    assert!(
+        stats.provenance_records >= info.chunk_count,
+        "every chunk needs a provenance row"
+    );
+    assert!(
+        stats.entities > 0,
+        "Acme Corp should be extracted as an entity"
+    );
     assert!(stats.db_size_bytes > 0);
 }
 
 #[test]
 fn ingest_is_idempotent_on_identical_content() {
     let engine = mem();
-    let first = engine.ingest_bytes("doc.md", DOC_A.as_bytes()).expect("first");
-    let second = engine.ingest_bytes("doc.md", DOC_A.as_bytes()).expect("second");
-    assert_eq!(first.id, second.id, "same content must map to the same document");
+    let first = engine
+        .ingest_bytes("doc.md", DOC_A.as_bytes())
+        .expect("first");
+    let second = engine
+        .ingest_bytes("doc.md", DOC_A.as_bytes())
+        .expect("second");
+    assert_eq!(
+        first.id, second.id,
+        "same content must map to the same document"
+    );
     let stats = engine.stats().expect("stats");
     assert_eq!(stats.documents, 1, "no duplicate documents");
     assert_eq!(stats.chunks, first.chunk_count, "no duplicate chunks");
@@ -73,8 +92,13 @@ fn changed_content_creates_new_document() {
     let engine = mem();
     let a = engine.ingest_bytes("doc.md", DOC_A.as_bytes()).expect("a");
     let changed = DOC_A.replace("25 days", "30 days");
-    let b = engine.ingest_bytes("doc.md", changed.as_bytes()).expect("b");
-    assert_ne!(a.id, b.id, "different content hash must be a new document version");
+    let b = engine
+        .ingest_bytes("doc.md", changed.as_bytes())
+        .expect("b");
+    assert_ne!(
+        a.id, b.id,
+        "different content hash must be a new document version"
+    );
     assert_eq!(engine.documents().expect("docs").len(), 2);
 }
 
@@ -94,8 +118,12 @@ fn empty_and_tiny_inputs_do_not_crash() {
 #[test]
 fn all_retrieval_modes_return_hits_with_explanations() {
     let engine = mem();
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    engine.ingest_bytes("audit.md", DOC_B.as_bytes()).expect("ingest");
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    engine
+        .ingest_bytes("audit.md", DOC_B.as_bytes())
+        .expect("ingest");
 
     for mode in [
         RetrievalMode::LexicalOnly,
@@ -108,7 +136,10 @@ fn all_retrieval_modes_return_hits_with_explanations() {
         assert!(!resp.hits.is_empty(), "mode {:?} returned no hits", mode);
         assert!(!resp.plan_explanation.is_empty());
         for h in &resp.hits {
-            assert!(!h.matched_by.is_empty(), "every hit must explain why it matched");
+            assert!(
+                !h.matched_by.is_empty(),
+                "every hit must explain why it matched"
+            );
             assert!(h.rank >= 1);
             assert!(h.score > 0.0 || mode == RetrievalMode::VectorOnly);
         }
@@ -118,26 +149,37 @@ fn all_retrieval_modes_return_hits_with_explanations() {
 #[test]
 fn hybrid_fusion_reports_both_channels() {
     let engine = mem();
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
     let resp = engine
         .query(QueryRequest::new("Acme Corp vacation policy").top_k(5))
         .expect("query");
-    let any_vector = resp
-        .hits
-        .iter()
-        .any(|h| h.matched_by.iter().any(|m| matches!(m, lkos::MatchSource::Vector { .. })));
-    let any_fts = resp
-        .hits
-        .iter()
-        .any(|h| h.matched_by.iter().any(|m| matches!(m, lkos::MatchSource::Fts { .. })));
-    assert!(any_vector && any_fts, "hybrid search should fuse both channels");
+    let any_vector = resp.hits.iter().any(|h| {
+        h.matched_by
+            .iter()
+            .any(|m| matches!(m, lkos::MatchSource::Vector { .. }))
+    });
+    let any_fts = resp.hits.iter().any(|h| {
+        h.matched_by
+            .iter()
+            .any(|m| matches!(m, lkos::MatchSource::Fts { .. }))
+    });
+    assert!(
+        any_vector && any_fts,
+        "hybrid search should fuse both channels"
+    );
 }
 
 #[test]
 fn context_assembly_respects_budget_and_diversity() {
     let engine = mem();
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    engine.ingest_bytes("audit.md", DOC_B.as_bytes()).expect("ingest");
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    engine
+        .ingest_bytes("audit.md", DOC_B.as_bytes())
+        .expect("ingest");
     let resp = engine
         .query(
             QueryRequest::new("Acme Corp")
@@ -145,7 +187,11 @@ fn context_assembly_respects_budget_and_diversity() {
                 .mode(RetrievalMode::Hybrid),
         )
         .expect("query");
-    assert!(resp.context.len() <= 3000 + 200, "context budget violated: {}", resp.context.len());
+    assert!(
+        resp.context.len() <= 3000 + 200,
+        "context budget violated: {}",
+        resp.context.len()
+    );
     // max_per_document = 3 by default.
     let mut counts = std::collections::HashMap::new();
     for h in &resp.hits {
@@ -160,7 +206,9 @@ fn context_assembly_respects_budget_and_diversity() {
 #[test]
 fn empty_query_is_rejected() {
     let engine = mem();
-    let err = engine.query(QueryRequest::new("   ")).expect_err("must reject");
+    let err = engine
+        .query(QueryRequest::new("   "))
+        .expect_err("must reject");
     assert!(err.to_string().contains("empty query"));
 }
 
@@ -171,13 +219,28 @@ fn empty_query_is_rejected() {
 #[test]
 fn planner_detects_intents() {
     use lkos::query::classify_intent;
-    use lkos::{QueryIntent};
-    assert_eq!(classify_intent("summarise my document"), QueryIntent::Summary);
-    assert_eq!(classify_intent("compare these two reports"), QueryIntent::Comparative);
-    assert_eq!(classify_intent("what changed in 2024"), QueryIntent::Temporal);
-    assert_eq!(classify_intent("find \"vacation policy\""), QueryIntent::Exact);
+    use lkos::QueryIntent;
+    assert_eq!(
+        classify_intent("summarise my document"),
+        QueryIntent::Summary
+    );
+    assert_eq!(
+        classify_intent("compare these two reports"),
+        QueryIntent::Comparative
+    );
+    assert_eq!(
+        classify_intent("what changed in 2024"),
+        QueryIntent::Temporal
+    );
+    assert_eq!(
+        classify_intent("find \"vacation policy\""),
+        QueryIntent::Exact
+    );
     assert_eq!(classify_intent("who is John Smith"), QueryIntent::Entity);
-    assert_eq!(classify_intent("how does billing work"), QueryIntent::Semantic);
+    assert_eq!(
+        classify_intent("how does billing work"),
+        QueryIntent::Semantic
+    );
 }
 
 #[test]
@@ -188,12 +251,22 @@ fn summary_fast_path_returns_prebuilt_summary() {
         ..Config::default()
     };
     let engine = Lkos::open_in_memory(cfg).expect("engine");
-    engine.set_llm(std::sync::Arc::new(FakeProvider { response: "A summary.".into() }));
-    let doc = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    engine.set_llm(std::sync::Arc::new(FakeProvider {
+        response: "A summary.".into(),
+    }));
+    let doc = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
     // FakeProvider produced a summary (chunk_count >= 2).
-    assert!(doc.chunk_count >= 2, "test doc must produce 2+ chunks under small config");
+    assert!(
+        doc.chunk_count >= 2,
+        "test doc must produce 2+ chunks under small config"
+    );
     assert_eq!(doc.readiness_state, "complete");
-    let stored = engine.summary(doc.id).expect("summary").expect("some summary");
+    let stored = engine
+        .summary(doc.id)
+        .expect("summary")
+        .expect("some summary");
     assert!(stored.contains("A summary."));
 
     let mut req = QueryRequest::new("summarise my document");
@@ -211,13 +284,20 @@ fn summary_fast_path_returns_prebuilt_summary() {
 #[test]
 fn works_without_any_llm() {
     let engine = mem(); // no provider installed
-    let doc = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    assert_eq!(doc.readiness_state, "ready", "without LLM docs finish as ready");
+    let doc = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    assert_eq!(
+        doc.readiness_state, "ready",
+        "without LLM docs finish as ready"
+    );
     assert!(engine.summary(doc.id).expect("summary").is_none());
     let resp = engine.query(QueryRequest::new("vacation")).expect("query");
     assert!(!resp.hits.is_empty());
     // ask() without a provider is a clean error, not a crash.
-    let err = engine.ask("what is the vacation policy").expect_err("no provider");
+    let err = engine
+        .ask("what is the vacation policy")
+        .expect_err("no provider");
     assert!(err.to_string().contains("no LLM provider"));
 }
 
@@ -226,8 +306,13 @@ fn llm_failure_does_not_break_ingestion() {
     use lkos::llm::NullProvider;
     let engine = mem();
     engine.set_llm(std::sync::Arc::new(NullProvider));
-    let doc = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    assert_eq!(doc.readiness_state, "ready", "summary failure degrades to ready");
+    let doc = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    assert_eq!(
+        doc.readiness_state, "ready",
+        "summary failure degrades to ready"
+    );
 }
 
 #[test]
@@ -235,14 +320,20 @@ fn ask_gives_grounded_answer_or_refusal() {
     // Refusal contract: with zero evidence the engine refuses structurally
     // instead of letting the LLM hallucinate.
     let empty = mem();
-    empty.set_llm(std::sync::Arc::new(FakeProvider { response: "Answer.".into() }));
+    empty.set_llm(std::sync::Arc::new(FakeProvider {
+        response: "Answer.".into(),
+    }));
     let miss = empty.ask("what is the vacation policy").expect("ask");
     assert_eq!(miss, "I cannot find this in your documents.");
 
     // Grounded contract: with evidence, the answer is produced from context.
     let engine = mem();
-    engine.set_llm(std::sync::Arc::new(FakeProvider { response: "Answer.".into() }));
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    engine.set_llm(std::sync::Arc::new(FakeProvider {
+        response: "Answer.".into(),
+    }));
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
     let answer = engine.ask("what is the vacation policy").expect("ask");
     assert!(!answer.is_empty());
 }
@@ -254,8 +345,12 @@ fn ask_gives_grounded_answer_or_refusal() {
 #[test]
 fn entities_are_extracted_resolved_and_linked() {
     let engine = mem();
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    engine.ingest_bytes("audit.md", DOC_B.as_bytes()).expect("ingest");
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    engine
+        .ingest_bytes("audit.md", DOC_B.as_bytes())
+        .expect("ingest");
 
     let acme = engine
         .entity_id_by_name("Acme Corp")
@@ -263,10 +358,15 @@ fn entities_are_extracted_resolved_and_linked() {
         .expect("acme entity exists");
     let hood = engine.neighborhood(acme, 10).expect("neighborhood");
     assert_eq!(hood.center.name, "Acme Corp");
-    assert!(!hood.documents.is_empty(), "acme must link back to its documents");
+    assert!(
+        !hood.documents.is_empty(),
+        "acme must link back to its documents"
+    );
     // Northwind doc mentions Acme → co-occurrence edge exists.
     assert!(
-        hood.neighbors.iter().any(|(n, _)| n.name.contains("Northwind")),
+        hood.neighbors
+            .iter()
+            .any(|(n, _)| n.name.contains("Northwind")),
         "co-occurrence graph should link Acme and Northwind"
     );
 }
@@ -274,8 +374,12 @@ fn entities_are_extracted_resolved_and_linked() {
 #[test]
 fn claims_and_conflicts_are_detected_and_preserved() {
     let engine = mem();
-    engine.ingest_bytes("audit.md", DOC_B.as_bytes()).expect("ingest");
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    engine
+        .ingest_bytes("audit.md", DOC_B.as_bytes())
+        .expect("ingest");
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
 
     let conflicts = engine.conflicts(10).expect("conflicts");
     assert!(
@@ -287,21 +391,35 @@ fn claims_and_conflicts_are_detected_and_preserved() {
     assert!(!c.explanation.is_empty());
 
     let claims = engine.claims_about("Acme Corp").expect("claims");
-    assert!(claims.len() >= 2, "both revenue claims should be retrievable, got {}", claims.len());
-    assert_eq!(claims.iter().filter(|cl| cl.predicate == "revenue").count(), 2);
+    assert!(
+        claims.len() >= 2,
+        "both revenue claims should be retrievable, got {}",
+        claims.len()
+    );
+    assert_eq!(
+        claims.iter().filter(|cl| cl.predicate == "revenue").count(),
+        2
+    );
 }
 
 #[test]
 fn temporal_queries_prefer_matching_years() {
     let engine = mem();
-    engine.ingest_bytes("old.md", b"# Old\n\nAcme revenue was $5M in 2019.\n")
+    engine
+        .ingest_bytes("old.md", b"# Old\n\nAcme revenue was $5M in 2019.\n")
         .expect("ingest");
-    engine.ingest_bytes("new.md", b"# New\n\nAcme revenue was $50M in 2024.\n")
+    engine
+        .ingest_bytes("new.md", b"# New\n\nAcme revenue was $50M in 2024.\n")
         .expect("ingest");
-    let resp = engine.query(QueryRequest::new("Acme revenue 2024").top_k(5)).expect("query");
+    let resp = engine
+        .query(QueryRequest::new("Acme revenue 2024").top_k(5))
+        .expect("query");
     assert!(!resp.hits.is_empty());
     let top_text = &resp.hits[0].text;
-    assert!(top_text.contains("2024"), "temporal filter should keep 2024 evidence, got: {top_text}");
+    assert!(
+        top_text.contains("2024"),
+        "temporal filter should keep 2024 evidence, got: {top_text}"
+    );
     // Graceful fallback: constraint never empties the result set.
     assert!(!resp.hits.is_empty());
 }
@@ -313,18 +431,34 @@ fn temporal_queries_prefer_matching_years() {
 #[test]
 fn delete_removes_all_derived_knowledge() {
     let engine = mem();
-    let doc = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    engine.ingest_bytes("audit.md", DOC_B.as_bytes()).expect("ingest");
+    let doc = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    engine
+        .ingest_bytes("audit.md", DOC_B.as_bytes())
+        .expect("ingest");
     let before = engine.stats().expect("stats");
     assert!(before.entities > 0 && before.chunks > 0);
 
     engine.delete_document(doc.id).expect("delete");
     let after = engine.stats().expect("stats");
     assert_eq!(after.documents, 1);
-    assert!(after.chunks < before.chunks, "chunks of deleted doc must go");
-    assert!(after.entity_mentions < before.entity_mentions, "mentions must go");
-    assert!(after.provenance_records < before.provenance_records, "provenance must go");
-    assert!(engine.document(doc.id).is_err(), "deleted document must not resolve");
+    assert!(
+        after.chunks < before.chunks,
+        "chunks of deleted doc must go"
+    );
+    assert!(
+        after.entity_mentions < before.entity_mentions,
+        "mentions must go"
+    );
+    assert!(
+        after.provenance_records < before.provenance_records,
+        "provenance must go"
+    );
+    assert!(
+        engine.document(doc.id).is_err(),
+        "deleted document must not resolve"
+    );
 }
 
 #[test]
@@ -332,8 +466,12 @@ fn backup_restore_roundtrip() {
     let dir = tempfile::tempdir().expect("tmp");
     let db = dir.path().join("lib.lkos");
     let engine = Lkos::open(&db, Config::default()).expect("open");
-    engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
-    engine.ingest_bytes("audit.md", DOC_B.as_bytes()).expect("ingest");
+    engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
+    engine
+        .ingest_bytes("audit.md", DOC_B.as_bytes())
+        .expect("ingest");
 
     let backup = dir.path().join("backup.lkos");
     engine.backup_to(&backup).expect("backup");
@@ -341,10 +479,16 @@ fn backup_restore_roundtrip() {
 
     let restored = Lkos::open(&backup, Config::default()).expect("reopen");
     assert_eq!(restored.stats().expect("stats").documents, 2);
-    let resp = restored.query(QueryRequest::new("vacation policy")).expect("query");
+    let resp = restored
+        .query(QueryRequest::new("vacation policy"))
+        .expect("query");
     assert!(!resp.hits.is_empty(), "backup must be fully searchable");
     let ic = restored.integrity_check().expect("integrity");
-    assert!(ic.iter().all(|r| r == "ok"), "integrity check failed: {:?}", ic);
+    assert!(
+        ic.iter().all(|r| r == "ok"),
+        "integrity check failed: {:?}",
+        ic
+    );
 }
 
 #[test]
@@ -352,14 +496,19 @@ fn reopening_existing_library_preserves_state() {
     let dir = tempfile::tempdir().expect("tmp");
     let db = dir.path().join("lib.lkos");
     let engine = Lkos::open(&db, Config::default()).expect("open");
-    let doc = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    let doc = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
     drop(engine);
 
     let reopened = Lkos::open(&db, Config::default()).expect("reopen");
     let docs = reopened.documents().expect("docs");
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, doc.id);
-    assert_eq!(docs[0].chunk_count, doc.chunk_count, "chunks survive restart");
+    assert_eq!(
+        docs[0].chunk_count, doc.chunk_count,
+        "chunks survive restart"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -370,15 +519,25 @@ fn reopening_existing_library_preserves_state() {
 fn event_stream_reports_lifecycle() {
     let engine = mem();
     let rx = engine.subscribe();
-    let doc = engine.ingest_bytes("handbook.md", DOC_A.as_bytes()).expect("ingest");
+    let doc = engine
+        .ingest_bytes("handbook.md", DOC_A.as_bytes())
+        .expect("ingest");
     engine.delete_document(doc.id).expect("delete");
 
     let mut names = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         names.push(ev.name);
     }
-    for expected in ["document.added", "document.ready", "knowledge.updated", "document.deleted"] {
-        assert!(names.contains(&expected.into()), "missing {expected}; got {names:?}");
+    for expected in [
+        "document.added",
+        "document.ready",
+        "knowledge.updated",
+        "document.deleted",
+    ] {
+        assert!(
+            names.contains(&expected.into()),
+            "missing {expected}; got {names:?}"
+        );
     }
 }
 

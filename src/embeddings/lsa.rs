@@ -136,7 +136,11 @@ pub fn train(
         .collect();
     let n_terms = vocab.len();
     let n_docs = docs.len();
-    let dim = dim.min(n_terms.saturating_sub(1)).max(2).min(n_docs.saturating_sub(1)).max(2);
+    let dim = dim
+        .min(n_terms.saturating_sub(1))
+        .max(2)
+        .min(n_docs.saturating_sub(1))
+        .max(2);
 
     // 3. TF-IDF sparse matrix (terms × docs), weight = (1+ln tf) · ln(1+N/df).
     //    Stored as CSR: row = term.
@@ -263,10 +267,18 @@ pub fn save_model(conn: &Connection, model: &LsaModel) -> Result<()> {
     for (term, idx) in inv {
         let base = *idx as usize * model.dim;
         term_vec.copy_from_slice(&model.term_vecs[base..base + model.dim]);
-        stmt.execute(rusqlite::params![term, *idx as i64, dao::f32_to_bytes(&term_vec)])?;
+        stmt.execute(rusqlite::params![
+            term,
+            *idx as i64,
+            dao::f32_to_bytes(&term_vec)
+        ])?;
     }
     dao::meta_set(conn, "lsa_dim", &model.dim.to_string())?;
-    dao::meta_set(conn, "lsa_trained_on_chunks", &model.trained_on_chunks.to_string())?;
+    dao::meta_set(
+        conn,
+        "lsa_trained_on_chunks",
+        &model.trained_on_chunks.to_string(),
+    )?;
     dao::meta_set(conn, "lsa_vocab_hash", &model.vocab_hash)?;
     Ok(())
 }
@@ -385,10 +397,12 @@ mod tests {
         let mut scored: Vec<(usize, f32)> = docs
             .iter()
             .enumerate()
-            .filter_map(|(i, d)| model.project(d).map(|v| {
-                let dot: f32 = qv.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-                (i, dot)
-            }))
+            .filter_map(|(i, d)| {
+                model.project(d).map(|v| {
+                    let dot: f32 = qv.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                    (i, dot)
+                })
+            })
             .collect();
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let top4: std::collections::HashSet<usize> =

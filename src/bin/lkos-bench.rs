@@ -41,9 +41,7 @@ fn parse_args() -> Args {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--docs" => {
-                args.docs = it.next().and_then(|v| v.parse().ok()).unwrap_or(args.docs)
-            }
+            "--docs" => args.docs = it.next().and_then(|v| v.parse().ok()).unwrap_or(args.docs),
             "--queries" => {
                 args.queries = it
                     .next()
@@ -141,7 +139,10 @@ fn make_document(rng: &mut Rng, idx: usize) -> (String, String, String) {
         let verb = VERBS[rng.below(VERBS.len())];
         let amount = 10_000 + rng.below(90_000);
         let revenue = 5 + rng.below(60);
-        let launched = format!("Project {}", ["Aurora", "Borealis", "Cascade", "Delta", "Echo", "Fusion"][rng.below(6)]);
+        let launched = format!(
+            "Project {}",
+            ["Aurora", "Borealis", "Cascade", "Delta", "Echo", "Fusion"][rng.below(6)]
+        );
         body.push_str(&format!(
             "## Section {p}: {topic} procedure {p}\n\n\
              {org} {verb} structured review for {topic} procedure {p} in {year}. \
@@ -273,7 +274,10 @@ fn bench_quality(engine: &Lkos, args: Args) -> (f64, f64) {
 fn main() {
     let args = parse_args();
     println!("LKOS benchmark");
-    println!("  docs: {}  queries: {}  k: {}", args.docs, args.queries, args.k);
+    println!(
+        "  docs: {}  queries: {}  k: {}",
+        args.docs, args.queries, args.k
+    );
     println!();
 
     let mut cfg = Config::default();
@@ -341,13 +345,22 @@ fn main() {
     }
 
     println!("== Ingestion ==");
-    println!("  corpus           : {} documents, {} chunks, {} chars", args.docs, chunks, chars);
+    println!(
+        "  corpus           : {} documents, {} chunks, {} chars",
+        args.docs, chunks, chars
+    );
     println!("  wall time        : {:.2} s", secs);
-    println!("  throughput       : {:.1} docs/s, {:.0} chunks/s", docs_per_s, chunks_per_s);
+    println!(
+        "  throughput       : {:.1} docs/s, {:.0} chunks/s",
+        docs_per_s, chunks_per_s
+    );
     println!();
     println!("== Semantic index (LSA) ==");
     if trained {
-        println!("  trained on      : {} chunks in {:.2} s", chunks, train_secs);
+        println!(
+            "  trained on      : {} chunks in {:.2} s",
+            chunks, train_secs
+        );
         println!(
             "  re-embedded     : {} chunks in {:.2} s ({:.0} chunks/s)",
             migrated,
@@ -359,7 +372,11 @@ fn main() {
     }
     println!();
     println!("== Query latency ({} queries per mode) ==", args.queries);
-    for (name, xs) in [("lexical (BM25)", &lex), ("vector (LSA cosine)", &vec_), ("hybrid (RRF+rerank)", &hyb)] {
+    for (name, xs) in [
+        ("lexical (BM25)", &lex),
+        ("vector (LSA cosine)", &vec_),
+        ("hybrid (RRF+rerank)", &hyb),
+    ] {
         println!(
             "  {:<20} p50 {:>10}   p95 {:>10}   p99 {:>10}",
             name,

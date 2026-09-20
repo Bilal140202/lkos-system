@@ -53,7 +53,11 @@ impl LlmProvider for FakeProvider {
     }
 
     fn generate(&self, prompt: &str, _max_tokens: u32, _temperature: f32) -> Result<String> {
-        Ok(format!("{} [echo of {} chars]", self.response, prompt.len()))
+        Ok(format!(
+            "{} [echo of {} chars]",
+            self.response,
+            prompt.len()
+        ))
     }
 }
 
@@ -123,10 +127,7 @@ impl LlmProvider for LlamaCppProvider {
             .stderr(std::process::Stdio::null());
 
         let mut child = cmd.spawn().map_err(|e| {
-            LkosError::Llm(format!(
-                "failed to launch {}: {e}",
-                self.binary.display()
-            ))
+            LkosError::Llm(format!("failed to launch {}: {e}", self.binary.display()))
         })?;
 
         let mut stdout = child

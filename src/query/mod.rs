@@ -14,8 +14,14 @@ pub fn classify_intent(query: &str) -> QueryIntent {
 
     // Summary intents.
     for kw in [
-        "summarize", "summarise", "summary of", "overview of", "tl;dr", "tldr",
-        "what is this document about", "main points of",
+        "summarize",
+        "summarise",
+        "summary of",
+        "overview of",
+        "tl;dr",
+        "tldr",
+        "what is this document about",
+        "main points of",
     ] {
         if trimmed.starts_with(kw) || trimmed.contains(kw) {
             return QueryIntent::Summary;
@@ -23,22 +29,40 @@ pub fn classify_intent(query: &str) -> QueryIntent {
     }
 
     // Comparative intents.
-    if ["compare", "difference between", "versus", " vs ", "contradict"]
-        .iter()
-        .any(|k| trimmed.contains(k))
+    if [
+        "compare",
+        "difference between",
+        "versus",
+        " vs ",
+        "contradict",
+    ]
+    .iter()
+    .any(|k| trimmed.contains(k))
     {
         return QueryIntent::Comparative;
     }
 
     // Temporal intents.
-    let temporal_words = ["when", "latest", "most recent", "before", "after", "since", "until"];
+    let temporal_words = [
+        "when",
+        "latest",
+        "most recent",
+        "before",
+        "after",
+        "since",
+        "until",
+    ];
     let has_year = query.split_whitespace().any(|w| {
         w.trim_matches(|c: char| !c.is_ascii_digit())
             .parse::<i32>()
             .map(|y| (1900..=2100).contains(&y))
             .unwrap_or(false)
     });
-    if has_year || temporal_words.iter().any(|k| trimmed.starts_with(k) || trimmed.contains(k)) {
+    if has_year
+        || temporal_words
+            .iter()
+            .any(|k| trimmed.starts_with(k) || trimmed.contains(k))
+    {
         return QueryIntent::Temporal;
     }
 
@@ -54,8 +78,10 @@ pub fn classify_intent(query: &str) -> QueryIntent {
         {
             return QueryIntent::Exact;
         }
-        let looks_identifier =
-            core.contains('_') || (core.chars().any(|c| c.is_ascii_uppercase()) && core.chars().any(|c| c.is_ascii_lowercase()) && core.len() > 6);
+        let looks_identifier = core.contains('_')
+            || (core.chars().any(|c| c.is_ascii_uppercase())
+                && core.chars().any(|c| c.is_ascii_lowercase())
+                && core.len() > 6);
         if looks_identifier {
             return QueryIntent::Exact;
         }
@@ -67,8 +93,7 @@ pub fn classify_intent(query: &str) -> QueryIntent {
     // Entity intents.
     if trimmed.starts_with("who is")
         || trimmed.starts_with("who was")
-        || trimmed.starts_with("what is ")
-            && entity_case_heuristic(query)
+        || trimmed.starts_with("what is ") && entity_case_heuristic(query)
         || trimmed.contains("everything about")
         || trimmed.contains("documents about")
     {
@@ -134,8 +159,16 @@ pub fn plan(req: &QueryRequest, cfg: &Config) -> QueryPlan {
         "intent={} mode={} weights(dense={wv:.2}, lexical={wf:.2}){}{}{}",
         intent.as_str(),
         mode_label(mode),
-        if use_summary { ", summary fast-path ON" } else { "" },
-        if use_entities { ", entity lookup ON" } else { "" },
+        if use_summary {
+            ", summary fast-path ON"
+        } else {
+            ""
+        },
+        if use_entities {
+            ", entity lookup ON"
+        } else {
+            ""
+        },
         match temporal {
             crate::temporal::TemporalConstraint::None => String::new(),
             _ => format!(", temporal constraint {:?}", temporal),
@@ -176,13 +209,24 @@ pub fn assemble_context(hits: &[SearchHit], budget: usize, max_per_doc: usize) -
             continue;
         }
         let snippet = h.text.chars().take(700).collect::<String>();
-        let block = format!("[{}] {} :: {}\n{}\n\n", i + 1, h.document, h.section.as_deref().unwrap_or("-"), snippet);
+        let block = format!(
+            "[{}] {} :: {}\n{}\n\n",
+            i + 1,
+            h.document,
+            h.section.as_deref().unwrap_or("-"),
+            snippet
+        );
         if used + block.len() > budget {
             break;
         }
         used += block.len();
         *d += 1;
-        cites.push(format!("[{}] {} :: {}", i + 1, h.document, h.section.as_deref().unwrap_or("-")));
+        cites.push(format!(
+            "[{}] {} :: {}",
+            i + 1,
+            h.document,
+            h.section.as_deref().unwrap_or("-")
+        ));
         out.push_str(&block);
     }
     if !cites.is_empty() {

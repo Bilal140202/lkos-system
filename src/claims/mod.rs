@@ -114,11 +114,7 @@ pub fn persist_claims(
         // enumerating every pair is quadratic and useless at corpus scale
         // (measured: 2.4k claims -> ~500k pair rows, ingestion stall).
         let existing = dao::numeric_claims_for_keys(conn, &subject_key, &predicate_key)?;
-        let existing: Vec<_> = existing
-            .iter()
-            .rev()
-            .take(MAX_COMPARISONS)
-            .collect();
+        let existing: Vec<_> = existing.iter().rev().take(MAX_COMPARISONS).collect();
         let mut conflicts_for_this_claim = 0usize;
         for other in existing {
             let (other_id, ovalue, oyear) = (other.0, other.1, other.2.clone());

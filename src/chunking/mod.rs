@@ -37,7 +37,11 @@ pub struct ProposedChunk {
 pub const CHUNKER_VERSION: &str = "chunk-v1.1.0";
 
 /// Chunk a document body.
-pub fn chunk_document(text: &str, doc_type: crate::types::DocType, cfg: &Config) -> Vec<ProposedChunk> {
+pub fn chunk_document(
+    text: &str,
+    doc_type: crate::types::DocType,
+    cfg: &Config,
+) -> Vec<ProposedChunk> {
     let blocks = match doc_type {
         crate::types::DocType::Code => code_blocks(text),
         _ => prose_blocks(text),
@@ -135,7 +139,13 @@ fn prose_blocks(text: &str) -> Vec<Block> {
     blocks
 }
 
-fn push_prose_block(blocks: &mut Vec<Block>, text: &str, start: usize, end: usize, section: Option<String>) {
+fn push_prose_block(
+    blocks: &mut Vec<Block>,
+    text: &str,
+    start: usize,
+    end: usize,
+    section: Option<String>,
+) {
     let slice = &text[start..end.min(text.len())];
     let t = slice.trim();
     if t.is_empty() {
@@ -179,10 +189,35 @@ fn code_blocks(text: &str) -> Vec<Block> {
     // Split into top-level blocks: a new block starts at a line matching unit
     // openers at column 0. Comments/blank lines attach to the following unit.
     let openers = [
-        "fn ", "pub fn ", "pub(crate) fn ", "impl ", "struct ", "enum ", "trait ", "mod ",
-        "class ", "def ", "async def ", "function ", "export function ", "export class ",
-        "public class ", "private class ", "interface ", "type ", "package ", "import ",
-        "#include", "func ", "var ", "const ", "let ", "SELECT", "CREATE", "INSERT", "UPDATE",
+        "fn ",
+        "pub fn ",
+        "pub(crate) fn ",
+        "impl ",
+        "struct ",
+        "enum ",
+        "trait ",
+        "mod ",
+        "class ",
+        "def ",
+        "async def ",
+        "function ",
+        "export function ",
+        "export class ",
+        "public class ",
+        "private class ",
+        "interface ",
+        "type ",
+        "package ",
+        "import ",
+        "#include",
+        "func ",
+        "var ",
+        "const ",
+        "let ",
+        "SELECT",
+        "CREATE",
+        "INSERT",
+        "UPDATE",
     ];
     let mut blocks = Vec::new();
     let mut block_start: Option<usize> = None;
@@ -231,9 +266,20 @@ fn push_code_block(blocks: &mut Vec<Block>, text: &str, start: usize, end: usize
 /// Heuristic: does this block look like a named unit (fn/class/def) we can title?
 fn is_code_unit(block: &str) -> bool {
     let first = block.lines().next().unwrap_or("");
-    ["fn ", "pub fn ", "def ", "class ", "function ", "func ", "impl ", "struct ", "trait ", "enum "]
-        .iter()
-        .any(|p| first.contains(p))
+    [
+        "fn ",
+        "pub fn ",
+        "def ",
+        "class ",
+        "function ",
+        "func ",
+        "impl ",
+        "struct ",
+        "trait ",
+        "enum ",
+    ]
+    .iter()
+    .any(|p| first.contains(p))
 }
 
 // ---------------------------------------------------------------------------

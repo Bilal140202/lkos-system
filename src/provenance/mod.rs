@@ -34,7 +34,10 @@ pub fn export_document(store: &Store, document_id: i64) -> Result<Option<Documen
     let rows = all_for_document(store, document_id)?;
     let mut artifacts: BTreeMap<String, Vec<crate::types::ProvenanceRecord>> = BTreeMap::new();
     for r in rows {
-        artifacts.entry(r.artifact_type.clone()).or_default().push(r);
+        artifacts
+            .entry(r.artifact_type.clone())
+            .or_default()
+            .push(r);
     }
     Ok(Some(DocumentProvenance {
         document_id,
@@ -45,7 +48,10 @@ pub fn export_document(store: &Store, document_id: i64) -> Result<Option<Documen
 }
 
 /// All provenance rows touching a document (artifact rows carry document_id).
-pub fn all_for_document(store: &Store, document_id: i64) -> Result<Vec<crate::types::ProvenanceRecord>> {
+pub fn all_for_document(
+    store: &Store,
+    document_id: i64,
+) -> Result<Vec<crate::types::ProvenanceRecord>> {
     let mut stmt = store.read().prepare(
         "SELECT id, artifact_type, artifact_id, document_id, chunk_id, start_offset, end_offset, \
          extractor, extractor_version, created_at

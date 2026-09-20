@@ -79,11 +79,7 @@ impl Lkos {
             match meta_model {
                 None => {
                     dao::meta_set(store.read(), "embedding_model", &embedder.name())?;
-                    dao::meta_set(
-                        store.read(),
-                        "embedding_dim",
-                        &embedder.dim().to_string(),
-                    )?;
+                    dao::meta_set(store.read(), "embedding_dim", &embedder.dim().to_string())?;
                 }
                 Some(m) => {
                     // A trained LSA model restores the semantic space; without
@@ -160,11 +156,7 @@ impl Lkos {
 
     /// Install an LLM provider (optional capability).
     pub fn set_llm(&self, provider: Arc<dyn LlmProvider>) {
-        *self
-            .inner
-            .llm
-            .write()
-            .expect("llm lock") = Some(provider);
+        *self.inner.llm.write().expect("llm lock") = Some(provider);
     }
 
     /// Subscribe to knowledge events.
@@ -217,9 +209,7 @@ impl Lkos {
             dao::get_document(store.read(), doc_id)
         } else {
             crate::jobs::enqueue_process_document(store.conn(), doc_id)?;
-            self.inner
-                .bus
-                .publish("document.queued", doc_id, filename);
+            self.inner.bus.publish("document.queued", doc_id, filename);
             dao::get_document(store.read(), doc_id)
         }
     }
@@ -241,7 +231,9 @@ impl Lkos {
             dao::get_document(store.read(), doc_id)
         } else {
             crate::jobs::enqueue_process_document(store.conn(), doc_id)?;
-            self.inner.bus.publish("document.queued", doc_id, &extracted.filename);
+            self.inner
+                .bus
+                .publish("document.queued", doc_id, &extracted.filename);
             dao::get_document(store.read(), doc_id)
         }
     }
@@ -266,7 +258,9 @@ impl Lkos {
             crate::knowledge::KNOWLEDGE_VERSION,
         )?;
         if created {
-            self.inner.bus.publish("document.added", doc_id, &extracted.filename);
+            self.inner
+                .bus
+                .publish("document.added", doc_id, &extracted.filename);
         }
         Ok((doc_id, created))
     }
@@ -362,7 +356,12 @@ impl Lkos {
                 Some(doc_id),
                 Some(cid),
                 Some((p.start_offset as i64, p.end_offset as i64)),
-                &format!("{} -> {} -> {}", ingestion::EXTRACTOR_VERSION, chunking::CHUNKER_VERSION, self.inner.embedder.name()),
+                &format!(
+                    "{} -> {} -> {}",
+                    ingestion::EXTRACTOR_VERSION,
+                    chunking::CHUNKER_VERSION,
+                    self.inner.embedder.name()
+                ),
                 crate::knowledge::KNOWLEDGE_VERSION,
             )?;
             chunk_ids.push(cid);
@@ -379,21 +378,21 @@ impl Lkos {
                 let mentioned =
                     crate::entities::persist_entities(store.conn(), doc_id, *cid, &ko.entities)?;
                 crate::entities::link_cooccurrences(store.conn(), doc_id, &mentioned)?;
-                let (claims_stored, _conflicts) = crate::claims::persist_claims(
-                    store.conn(),
-                    doc_id,
-                    *cid,
-                    &ko.claims,
-                )?;
+                let (claims_stored, _conflicts) =
+                    crate::claims::persist_claims(store.conn(), doc_id, *cid, &ko.claims)?;
                 if claims_stored > 0 {
-                    self.inner
-                        .bus
-                        .publish("claim.extracted", doc_id, &format!("{claims_stored} claims in chunk {cid}"));
+                    self.inner.bus.publish(
+                        "claim.extracted",
+                        doc_id,
+                        &format!("{claims_stored} claims in chunk {cid}"),
+                    );
                 }
                 if !mentioned.is_empty() {
-                    self.inner
-                        .bus
-                        .publish("entity.discovered", doc_id, &format!("{} entities in chunk {cid}", mentioned.len()));
+                    self.inner.bus.publish(
+                        "entity.discovered",
+                        doc_id,
+                        &format!("{} entities in chunk {cid}", mentioned.len()),
+                    );
                 }
             }
         }
@@ -411,12 +410,7 @@ impl Lkos {
             .publish("document.ready", doc_id, &doc.filename);
 
         // OPTIONAL LLM SUMMARY ----------------------------------------------
-        let llm = self
-            .inner
-            .llm
-            .read()
-            .expect("llm lock")
-            .clone();
+        let llm = self.inner.llm.read().expect("llm lock").clone();
         if let Some(provider) = llm {
             if provider.name() != "null" && chunk_ids.len() >= 2 {
                 dao::set_readiness(store.conn(), doc_id, ReadinessState::Summarizing)?;
@@ -439,12 +433,7 @@ impl Lkos {
                 );
                 match provider.generate(&prompt, cfg.summary_max_tokens, cfg.summary_temperature) {
                     Ok(summary) => {
-                        dao::set_summary(
-                            store.conn(),
-                            doc_id,
-                            summary.trim(),
-                            &dao::now(),
-                        )?;
+                        dao::set_summary(store.conn(), doc_id, summary.trim(), &dao::now())?;
                         dao::insert_provenance(
                             store.conn(),
                             "summary",
@@ -583,9 +572,7 @@ impl Lkos {
             _ => {
                 let kept: Vec<SearchHit> = hits
                     .iter()
-                    .filter(|h| {
-                        crate::temporal::matches_constraint(&h.text, &plan.temporal)
-                    })
+                    .filter(|h| crate::temporal::matches_constraint(&h.text, &plan.temporal))
                     .cloned()
                     .collect();
                 if !kept.is_empty() {
@@ -594,7 +581,8 @@ impl Lkos {
             }
         }
 
-        let context = crate::query::assemble_context(&hits, req.context_budget, req.max_per_document);
+        let context =
+            crate::query::assemble_context(&hits, req.context_budget, req.max_per_document);
 
         let mut provenance = Vec::new();
         if req.include_provenance {
@@ -654,8 +642,7 @@ impl Lkos {
             .clone()
             .ok_or_else(|| {
                 LkosError::Llm(
-                    "no LLM provider configured; use `query()` for retrieval-only answers"
-                        .into(),
+                    "no LLM provider configured; use `query()` for retrieval-only answers".into(),
                 )
             })?;
         let req = QueryRequest::new(question).top_k(8);
@@ -774,7 +761,11 @@ impl Lkos {
     }
 
     /// Provenance trail of an artifact.
-    pub fn provenance_of(&self, artifact_type: &str, artifact_id: &str) -> Result<Vec<ProvenanceRecord>> {
+    pub fn provenance_of(
+        &self,
+        artifact_type: &str,
+        artifact_id: &str,
+    ) -> Result<Vec<ProvenanceRecord>> {
         let store = Store::open(&self.inner.path)?;
         dao::provenance_for(store.read(), artifact_type, artifact_id)
     }
@@ -783,9 +774,7 @@ impl Lkos {
     pub fn stats(&self) -> Result<LibraryStats> {
         let store = Store::open(&self.inner.path)?;
         let c = store.read();
-        let count = |sql: &str| -> Result<i64> {
-            Ok(c.query_row(sql, [], |r| r.get(0))?)
-        };
+        let count = |sql: &str| -> Result<i64> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
         Ok(LibraryStats {
             documents: count("SELECT COUNT(*) FROM documents")?,
             chunks: count("SELECT COUNT(*) FROM chunks")?,
@@ -828,13 +817,16 @@ impl Lkos {
             return Ok(false); // provider is hashing; nothing to train
         };
         let mut store = Store::open(&self.inner.path)?;
-        let n_chunks: i64 =
-            store.read().query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+        let n_chunks: i64 = store
+            .read()
+            .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
         if (n_chunks as usize) < self.inner.config.semantic_min_chunks {
             return Ok(false);
         }
         // Stream chunk texts in id order (deterministic training input).
-        let mut stmt = store.read().prepare("SELECT text FROM chunks ORDER BY id")?;
+        let mut stmt = store
+            .read()
+            .prepare("SELECT text FROM chunks ORDER BY id")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let texts: Vec<String> = rows.filter_map(|r| r.ok()).collect();
         drop(stmt);
@@ -849,12 +841,18 @@ impl Lkos {
             return Ok(false);
         };
         crate::embeddings::lsa::save_model(store.conn(), &model)?;
-        dao::meta_set(store.conn(), "embedding_model", crate::embeddings::lsa::LSA_MODEL_NAME)?;
+        dao::meta_set(
+            store.conn(),
+            "embedding_model",
+            crate::embeddings::lsa::LSA_MODEL_NAME,
+        )?;
         dao::meta_set(store.conn(), "embedding_dim", &model.dim.to_string())?;
         lsa.install_model(model);
-        self.inner
-            .bus
-            .publish("semantic.trained", 0, crate::embeddings::lsa::LSA_MODEL_NAME);
+        self.inner.bus.publish(
+            "semantic.trained",
+            0,
+            crate::embeddings::lsa::LSA_MODEL_NAME,
+        );
         Ok(true)
     }
 
@@ -925,12 +923,10 @@ impl Lkos {
     /// share of stale-model chunks. Returns the number of stale chunks.
     pub fn stale_embedding_count(&self) -> Result<usize> {
         let store = Store::open(&self.inner.path)?;
-        Ok(dao::stale_embedding_chunks(
-            store.read(),
-            &self.inner.embedder.name(),
-            usize::MAX,
-        )?
-        .len())
+        Ok(
+            dao::stale_embedding_chunks(store.read(), &self.inner.embedder.name(), usize::MAX)?
+                .len(),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -953,9 +949,11 @@ impl Lkos {
         let mut store = Store::open(&self.inner.path)?;
         dao::merge_entity_rows(store.conn(), survivor, merged, reason)?;
         dao::recompute_relationships_for_entities(store.conn(), &[survivor])?;
-        self.inner
-            .bus
-            .publish("entity.merged", survivor, &format!("absorbed {merged}: {reason}"));
+        self.inner.bus.publish(
+            "entity.merged",
+            survivor,
+            &format!("absorbed {merged}: {reason}"),
+        );
         Ok(())
     }
 
@@ -983,19 +981,15 @@ impl Lkos {
                         let payload: serde_json::Value =
                             serde_json::from_str(&job.payload).unwrap_or_default();
                         let doc_id = payload.get("document_id").and_then(|d| d.as_i64());
-                        let model = payload
-                            .get("model")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("");
+                        let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
                         let result = match (job.kind.as_str(), doc_id) {
                             ("process_document", Some(id)) => engine.process_document(id),
                             ("delete_document", Some(id)) => engine.delete_document(id),
                             ("reembed_stale", _) => {
                                 engine.reembed_stale_chunks(model, Some(job.id)).map(|_| ())
                             }
-                            ("train_semantic", _) => engine
-                                .train_semantic_index()
-                                .and_then(|trained| {
+                            ("train_semantic", _) => {
+                                engine.train_semantic_index().and_then(|trained| {
                                     if trained {
                                         engine
                                             .reembed_stale_chunks("lsa-pmi-svd-v1", Some(job.id))
@@ -1003,7 +997,8 @@ impl Lkos {
                                     } else {
                                         Ok(())
                                     }
-                                }),
+                                })
+                            }
                             _ => Err(LkosError::Other(format!("unknown job kind {}", job.kind))),
                         };
                         let mut store = match Store::open(&engine.inner.path) {

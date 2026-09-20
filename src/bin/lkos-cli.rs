@@ -87,12 +87,7 @@ fn main() {
     }
 }
 
-fn run(
-    cmd: &str,
-    rest: &[String],
-    args: &Args,
-    config: Config,
-) -> lkos::Result<()> {
+fn run(cmd: &str, rest: &[String], args: &Args, config: Config) -> lkos::Result<()> {
     match cmd {
         "init" => {
             let _ = Lkos::open(&args.db, config)?;
@@ -180,7 +175,11 @@ fn run(
         "ask" => {
             let engine = Lkos::open(&args.db, config)?;
             if let (Some(binary), Some(model)) = (&args.llm, &args.model) {
-                let provider = lkos::llm::LlamaCppProvider::new(binary, model, engine.config().llm_timeout_secs);
+                let provider = lkos::llm::LlamaCppProvider::new(
+                    binary,
+                    model,
+                    engine.config().llm_timeout_secs,
+                );
                 engine.set_llm(std::sync::Arc::new(provider));
             } else {
                 engine.set_llm(std::sync::Arc::new(lkos::llm::NullProvider));
@@ -194,11 +193,17 @@ fn run(
             let engine = Lkos::open(&args.db, config)?;
             if let Some(doc_id) = rest.first().and_then(|v| v.parse::<i64>().ok()) {
                 for e in engine.document_entities(doc_id)? {
-                    println!("{:>4}  {:<28} {:<12} {} mentions", e.id, e.display_name, e.entity_type, e.mention_count);
+                    println!(
+                        "{:>4}  {:<28} {:<12} {} mentions",
+                        e.id, e.display_name, e.entity_type, e.mention_count
+                    );
                 }
             } else {
                 for e in engine.list_entities(100)? {
-                    println!("{:>4}  {:<28} {:<12} {} mentions", e.id, e.display_name, e.entity_type, e.mention_count);
+                    println!(
+                        "{:>4}  {:<28} {:<12} {} mentions",
+                        e.id, e.display_name, e.entity_type, e.mention_count
+                    );
                 }
             }
             Ok(())
@@ -221,7 +226,11 @@ fn run(
             for cf in engine.conflicts(limit)? {
                 println!(
                     "[{}] {} x {}: {:.0}% delta — {}",
-                    cf.id, cf.claim_a, cf.claim_b, cf.delta * 100.0, cf.explanation
+                    cf.id,
+                    cf.claim_a,
+                    cf.claim_b,
+                    cf.delta * 100.0,
+                    cf.explanation
                 );
             }
             Ok(())
@@ -233,9 +242,17 @@ fn run(
                 .entity_id_by_name(&name)?
                 .ok_or_else(|| lkos::LkosError::Other(format!("entity '{name}' not found")))?;
             let nb = engine.neighborhood(entity_id, 15)?;
-            println!("{} [{}] — {} documents", nb.center.name, nb.center.entity_type, nb.documents.len());
+            println!(
+                "{} [{}] — {} documents",
+                nb.center.name,
+                nb.center.entity_type,
+                nb.documents.len()
+            );
             for (n, e) in &nb.neighbors {
-                println!("  --{}(w={:.0})--> {} [{}]", e.relationship, e.weight, n.name, n.entity_type);
+                println!(
+                    "  --{}(w={:.0})--> {} [{}]",
+                    e.relationship, e.weight, n.name, n.entity_type
+                );
             }
             Ok(())
         }

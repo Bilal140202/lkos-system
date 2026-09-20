@@ -42,7 +42,10 @@ pub struct HashingEmbedder {
 impl HashingEmbedder {
     /// Create with a dimension (default 256) and fixed seed.
     pub fn new(dim: usize) -> Self {
-        HashingEmbedder { dim: dim.max(64), seed: 0x9E_37_79_B9_7F_4A_7C_15 }
+        HashingEmbedder {
+            dim: dim.max(64),
+            seed: 0x9E_37_79_B9_7F_4A_7C_15,
+        }
     }
 
     /// Override seed (rarely needed; documented for reproducibility).
@@ -53,7 +56,8 @@ impl HashingEmbedder {
 
     fn hash(&self, token: &str, salt: u64) -> (usize, f32) {
         // FNV-1a 64 with seed + salt.
-        let mut h: u64 = 0xcb_f2_9c_e4_84_22_23_25 ^ self.seed ^ salt.wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        let mut h: u64 =
+            0xcb_f2_9c_e4_84_22_23_25 ^ self.seed ^ salt.wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
         for b in token.as_bytes() {
             h ^= u64::from(*b);
             h = h.wrapping_mul(0x10_00_00_00_01_b3);

@@ -249,19 +249,25 @@ pub fn hybrid_search(
 
     // RRF fusion.
     let mut fusion: HashMap<i64, (f32, Vec<MatchSource>)> = HashMap::new();
-    let bump =
-        |id: i64, weight: f32, rank: usize, src: MatchSource, fusion: &mut HashMap<i64, (f32, Vec<MatchSource>)>| {
-            let contribution = weight / ((rrf_k + rank) as f32);
-            let entry = fusion.entry(id).or_insert((0.0, Vec::new()));
-            entry.0 += contribution;
-            entry.1.push(src);
-        };
+    let bump = |id: i64,
+                weight: f32,
+                rank: usize,
+                src: MatchSource,
+                fusion: &mut HashMap<i64, (f32, Vec<MatchSource>)>| {
+        let contribution = weight / ((rrf_k + rank) as f32);
+        let entry = fusion.entry(id).or_insert((0.0, Vec::new()));
+        entry.0 += contribution;
+        entry.1.push(src);
+    };
     for (id, rank, cos) in &vec_res {
         bump(
             *id,
             w_vector,
             *rank,
-            MatchSource::Vector { rank: *rank, cosine: *cos },
+            MatchSource::Vector {
+                rank: *rank,
+                cosine: *cos,
+            },
             &mut fusion,
         );
     }
@@ -270,24 +276,31 @@ pub fn hybrid_search(
             *id,
             w_fts,
             *rank,
-            MatchSource::Fts { rank: *rank, bm25: *bm25_score },
+            MatchSource::Fts {
+                rank: *rank,
+                bm25: *bm25_score,
+            },
             &mut fusion,
         );
     }
     if matches!(mode, RetrievalMode::EntityLookup) {
         for (rank, cid) in entity_chunk_ids.iter().enumerate() {
-            let name = entity_chunk_name
-                .get(cid)
-                .cloned()
-                .unwrap_or_default();
-            bump(*cid, 0.8, rank + 1, MatchSource::Entity { name }, &mut fusion);
+            let name = entity_chunk_name.get(cid).cloned().unwrap_or_default();
+            bump(
+                *cid,
+                0.8,
+                rank + 1,
+                MatchSource::Entity { name },
+                &mut fusion,
+            );
         }
     }
 
     // Boosts: authority, phrase, entity, section title.
     let lower_query = query.to_lowercase();
-    let query_tokens: HashSet<String> =
-        crate::embeddings::tokenize(&lower_query).into_iter().collect();
+    let query_tokens: HashSet<String> = crate::embeddings::tokenize(&lower_query)
+        .into_iter()
+        .collect();
 
     let mut scored_rows: Vec<(i64, f32, Vec<MatchSource>, HitRow)> = Vec::new();
     for (id, (mut score, mut sources)) in fusion {
@@ -308,8 +321,9 @@ pub fn hybrid_search(
             }
         }
         if let Some(sec) = &row.section_title {
-            let sec_tokens: HashSet<String> =
-                crate::embeddings::tokenize(&sec.to_lowercase()).into_iter().collect();
+            let sec_tokens: HashSet<String> = crate::embeddings::tokenize(&sec.to_lowercase())
+                .into_iter()
+                .collect();
             let overlap = sec_tokens.intersection(&query_tokens).count();
             if overlap > 0 {
                 score += 0.02 * overlap as f32;
@@ -374,8 +388,9 @@ fn rerank_lexical_overlap(
     // Pass 1: compute raw rerank scores for the window.
     let mut raw: Vec<f32> = Vec::with_capacity(window);
     for entry in scored.iter().take(window) {
-        let text_tokens: HashSet<String> =
-            crate::embeddings::tokenize(&entry.3.text).into_iter().collect();
+        let text_tokens: HashSet<String> = crate::embeddings::tokenize(&entry.3.text)
+            .into_iter()
+            .collect();
         let overlap = query_tokens.intersection(&text_tokens).count();
         // Length-normalized coverage: avoids biasing toward long chunks.
         let cov = overlap as f32 / query_tokens.len() as f32;

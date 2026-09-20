@@ -40,29 +40,74 @@ const CORPUS: &[(&str, &str)] = &[
 /// grade. We judge at the DOCUMENT level: any chunk of a graded document
 /// inherits the grade (a standard approximation for small corpora).
 const QUERIES: &[(&str, &[(&str, u8)])] = &[
-    ("Northwind Industries revenue 2024", &[("fin-report", 3), ("fin-audit", 3), ("fin-market", 1)]),
-    ("budget cuts travel marketing", &[("fin-budget", 3), ("fin-market", 1)]),
-    ("query optimizer index scan latency", &[("eng-db", 3), ("eng-api", 2), ("eng-cache", 1)]),
-    ("cache eviction policy hit rate", &[("eng-cache", 3), ("eng-db", 1)]),
+    (
+        "Northwind Industries revenue 2024",
+        &[("fin-report", 3), ("fin-audit", 3), ("fin-market", 1)],
+    ),
+    (
+        "budget cuts travel marketing",
+        &[("fin-budget", 3), ("fin-market", 1)],
+    ),
+    (
+        "query optimizer index scan latency",
+        &[("eng-db", 3), ("eng-api", 2), ("eng-cache", 1)],
+    ),
+    (
+        "cache eviction policy hit rate",
+        &[("eng-cache", 3), ("eng-db", 1)],
+    ),
     ("blue-green deployment rollback", &[("eng-deploy", 3)]),
     ("api deprecation versioning", &[("eng-api", 3)]),
-    ("remote work policy equipment", &[("hr-policy", 3), ("hr-benefits", 1)]),
-    ("hiring interview loops onboarding", &[("hr-hiring", 3), ("hr-training", 1)]),
-    ("mentoring program pairing", &[("hr-training", 3), ("hr-hiring", 2)]),
+    (
+        "remote work policy equipment",
+        &[("hr-policy", 3), ("hr-benefits", 1)],
+    ),
+    (
+        "hiring interview loops onboarding",
+        &[("hr-hiring", 3), ("hr-training", 1)],
+    ),
+    (
+        "mentoring program pairing",
+        &[("hr-training", 3), ("hr-hiring", 2)],
+    ),
     ("parental leave paid weeks", &[("hr-benefits", 3)]),
-    ("latent semantic analysis polysemy", &[("res-lsa", 3), ("res-graph", 1)]),
+    (
+        "latent semantic analysis polysemy",
+        &[("res-lsa", 3), ("res-graph", 1)],
+    ),
     ("bm25 term frequency saturation", &[("res-bm25", 3)]),
-    ("reciprocal rank fusion k parameter", &[("res-fusion", 3), ("res-bm25", 1)]),
-    ("typed relations provenance multi-hop", &[("res-graph", 3), ("res-fusion", 1)]),
+    (
+        "reciprocal rank fusion k parameter",
+        &[("res-fusion", 3), ("res-bm25", 1)],
+    ),
+    (
+        "typed relations provenance multi-hop",
+        &[("res-graph", 3), ("res-fusion", 1)],
+    ),
     ("WAL checkpoint write stalls", &[("eng-db", 3)]),
-    ("hardware budget employee", &[("hr-policy", 3), ("hr-training", 2)]),
+    (
+        "hardware budget employee",
+        &[("hr-policy", 3), ("hr-training", 2)],
+    ),
 ];
 
 const DOC_TOPICS: &[&str] = &[
-    "fin-report", "fin-audit", "fin-budget", "fin-market",
-    "eng-db", "eng-api", "eng-cache", "eng-deploy",
-    "hr-policy", "hr-hiring", "hr-training", "hr-benefits",
-    "res-lsa", "res-bm25", "res-fusion", "res-graph",
+    "fin-report",
+    "fin-audit",
+    "fin-budget",
+    "fin-market",
+    "eng-db",
+    "eng-api",
+    "eng-cache",
+    "eng-deploy",
+    "hr-policy",
+    "hr-hiring",
+    "hr-training",
+    "hr-benefits",
+    "res-lsa",
+    "res-bm25",
+    "res-fusion",
+    "res-graph",
 ];
 
 struct Metrics {
@@ -116,7 +161,11 @@ fn evaluate(hits: &[String], qrels: &[(&str, u8)]) -> Metrics {
     Metrics {
         recall_at_5: if relevant_top5 { 1.0 } else { 0.0 },
         recall_at_10: if relevant_top10 { 1.0 } else { 0.0 },
-        mrr: if first_rel_rank > 0 { 1.0 / first_rel_rank as f64 } else { 0.0 },
+        mrr: if first_rel_rank > 0 {
+            1.0 / first_rel_rank as f64
+        } else {
+            0.0
+        },
         ndcg_at_10: if idcg > 0.0 { dcg / idcg } else { 0.0 },
     }
 }
@@ -172,10 +221,7 @@ fn golden_evaluation_hybrid_beats_or_matches_channels_with_honest_floor() {
             sum.recall_at_10 += m.recall_at_10;
             sum.mrr += m.mrr;
             sum.ndcg_at_10 += m.ndcg_at_10;
-            rows.push_str(&format!(
-                "  [{name}] {:.3} q='{}'\n",
-                m.ndcg_at_10, q
-            ));
+            rows.push_str(&format!("  [{name}] {:.3} q='{}'\n", m.ndcg_at_10, q));
         }
         let n = QUERIES.len() as f64;
         println!("=== {name} (averages over {} queries) ===\n{}recall@5={:.3} recall@10={:.3} mrr={:.3} ndcg@10={:.3}",
@@ -199,8 +245,14 @@ fn golden_evaluation_hybrid_beats_or_matches_channels_with_honest_floor() {
     // Honest floors (documented in docs/EVALUATION.md): a 16-doc corpus with
     // keyword-matchable queries must be largely solved by the hybrid stack.
     assert!(hybrid_mrr >= 0.50, "hybrid MRR floor: got {hybrid_mrr}");
-    assert!(hybrid_ndcg >= 0.55, "hybrid nDCG@10 floor: got {hybrid_ndcg}");
-    assert!(hybrid_recall10 >= 0.85, "hybrid recall@10 floor: got {hybrid_recall10}");
+    assert!(
+        hybrid_ndcg >= 0.55,
+        "hybrid nDCG@10 floor: got {hybrid_ndcg}"
+    );
+    assert!(
+        hybrid_recall10 >= 0.85,
+        "hybrid recall@10 floor: got {hybrid_recall10}"
+    );
     // Fusion must not be WORSE than the best single channel by a margin.
     assert!(
         hybrid_mrr >= lexical_mrr - 0.05,

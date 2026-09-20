@@ -20,8 +20,25 @@ use rusqlite::{Connection, OptionalExtension};
 
 /// Legal-suffix and noise tokens stripped during canonicalization.
 const LEGAL_SUFFIXES: &[&str] = &[
-    "inc", "incorporated", "corp", "corporation", "ltd", "limited", "llc", "llp", "gmbh", "ag",
-    "plc", "co", "company", "group", "holdings", "sa", "sas", "bv", "oy",
+    "inc",
+    "incorporated",
+    "corp",
+    "corporation",
+    "ltd",
+    "limited",
+    "llc",
+    "llp",
+    "gmbh",
+    "ag",
+    "plc",
+    "co",
+    "company",
+    "group",
+    "holdings",
+    "sa",
+    "sas",
+    "bv",
+    "oy",
 ];
 
 /// Jaro–Winkler similarity threshold for fuzzy entity linking.
@@ -179,7 +196,9 @@ pub fn persist_entities(
     let mut out = Vec::new();
     for cand in candidates {
         // Skip weak types for graph indexing (keep in KO payload though).
-        if cand.entity_type == crate::knowledge::T_URL || cand.entity_type == crate::knowledge::T_PERCENT {
+        if cand.entity_type == crate::knowledge::T_URL
+            || cand.entity_type == crate::knowledge::T_PERCENT
+        {
             continue;
         }
         let key = canonical_key(&cand.surface);
@@ -261,7 +280,10 @@ mod tests {
 
     #[test]
     fn canonical_key_strips_suffixes_and_case() {
-        assert_eq!(canonical_key("Acme Corp"), canonical_key("acme corporation"));
+        assert_eq!(
+            canonical_key("Acme Corp"),
+            canonical_key("acme corporation")
+        );
         assert_eq!(canonical_key("Microsoft Inc."), "microsoft");
     }
 

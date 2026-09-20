@@ -54,8 +54,7 @@ pub fn enqueue_delete_document(conn: &Connection, document_id: i64) -> Result<i6
 
 /// Claim the next runnable job atomically.
 pub fn claim_next(conn: &mut Connection) -> Result<Option<Job>> {
-    Ok(dao::claim_next_atomic(conn)?
-        .map(|(id, kind, payload)| Job { id, kind, payload }))
+    Ok(dao::claim_next_atomic(conn)?.map(|(id, kind, payload)| Job { id, kind, payload }))
 }
 
 /// Mark a job done.
@@ -110,7 +109,14 @@ pub fn fail_and_maybe_retry(
             .min(backoff_max_secs);
         let run_at = (chrono::Utc::now() + chrono::Duration::seconds(delay as i64))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        dao::update_job_sched(conn, job.id, "pending", new_attempts, Some(error), Some(&run_at))?;
+        dao::update_job_sched(
+            conn,
+            job.id,
+            "pending",
+            new_attempts,
+            Some(error),
+            Some(&run_at),
+        )?;
         Ok(true)
     }
 }

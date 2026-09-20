@@ -60,7 +60,9 @@ impl Store {
 
     /// Apply all pending migrations sequentially.
     pub fn migrate(&self) -> Result<()> {
-        let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
             self.conn.execute_batch(schema::V1_BASE)?;
         }
@@ -82,7 +84,8 @@ impl Store {
                  upgrade LKOS instead of downgrading onto this library"
             )));
         }
-        self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        self.conn
+            .pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(())
     }
 
@@ -136,5 +139,4 @@ impl Store {
         backup.run_to_completion(64, std::time::Duration::from_millis(5), None)?;
         Ok(())
     }
-
 }

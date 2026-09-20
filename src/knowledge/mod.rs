@@ -106,9 +106,26 @@ fn re_org() -> &'static regex::Regex {
 
 /// Legal-suffix tokens that terminate an organization surface name.
 const ORG_SUFFIX_TOKENS: &[&str] = &[
-    "Inc", "Corp", "Corporation", "Ltd", "Limited", "LLC", "LLP", "GmbH", "AG", "PLC", "Group",
-    "Holdings", "University", "Institute", "Laboratory", "Laboratories", "Foundation",
-    "Association", "Systems", "Labs",
+    "Inc",
+    "Corp",
+    "Corporation",
+    "Ltd",
+    "Limited",
+    "LLC",
+    "LLP",
+    "GmbH",
+    "AG",
+    "PLC",
+    "Group",
+    "Holdings",
+    "University",
+    "Institute",
+    "Laboratory",
+    "Laboratories",
+    "Foundation",
+    "Association",
+    "Systems",
+    "Labs",
 ];
 
 /// Truncate an org surface at the first legal-suffix token, keeping the
@@ -133,9 +150,7 @@ fn re_person() -> &'static regex::Regex {
 }
 
 fn re_money() -> &'static regex::Regex {
-    RE_MONEY.get_or_init(|| {
-        regex::Regex::new(r"[$€£]\s?\d[\d.,]*\s?[MBK]?").expect("money regex")
-    })
+    RE_MONEY.get_or_init(|| regex::Regex::new(r"[$€£]\s?\d[\d.,]*\s?[MBK]?").expect("money regex"))
 }
 
 fn re_percent() -> &'static regex::Regex {
@@ -159,21 +174,86 @@ fn re_email() -> &'static regex::Regex {
 }
 
 fn re_url() -> &'static regex::Regex {
-    RE_URL.get_or_init(|| {
-        regex::Regex::new(r#"\bhttps?://[^\s)>\]"']+"#).expect("url regex")
-    })
+    RE_URL.get_or_init(|| regex::Regex::new(r#"\bhttps?://[^\s)>\]"']+"#).expect("url regex"))
 }
 
 /// Words that disqualify a capitalized pair from being a person name.
 const NAME_STOPWORDS: &[&str] = &[
-    "the", "this", "that", "these", "those", "there", "then", "than", "thus", "when", "where",
-    "while", "with", "without", "within", "into", "onto", "over", "under", "after", "before",
-    "during", "since", "about", "above", "below", "between", "because", "although", "however",
-    "therefore", "furthermore", "moreover", "meanwhile", "chapter", "section", "figure", "table",
-    "note", "summary", "abstract", "introduction", "conclusion", "results", "methodology",
-    "background", "overview", "appendix", "references", "document", "file", "image", "code",
-    "pub", "fn", "let", "var", "const", "new", "return", "import", "export", "class", "struct",
-    "enum", "impl", "type", "def", "self", "none", "true", "false", "error", "warning", "todo",
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    "there",
+    "then",
+    "than",
+    "thus",
+    "when",
+    "where",
+    "while",
+    "with",
+    "without",
+    "within",
+    "into",
+    "onto",
+    "over",
+    "under",
+    "after",
+    "before",
+    "during",
+    "since",
+    "about",
+    "above",
+    "below",
+    "between",
+    "because",
+    "although",
+    "however",
+    "therefore",
+    "furthermore",
+    "moreover",
+    "meanwhile",
+    "chapter",
+    "section",
+    "figure",
+    "table",
+    "note",
+    "summary",
+    "abstract",
+    "introduction",
+    "conclusion",
+    "results",
+    "methodology",
+    "background",
+    "overview",
+    "appendix",
+    "references",
+    "document",
+    "file",
+    "image",
+    "code",
+    "pub",
+    "fn",
+    "let",
+    "var",
+    "const",
+    "new",
+    "return",
+    "import",
+    "export",
+    "class",
+    "struct",
+    "enum",
+    "impl",
+    "type",
+    "def",
+    "self",
+    "none",
+    "true",
+    "false",
+    "error",
+    "warning",
+    "todo",
 ];
 
 /// Common multi-word capitals that are not names (e.g. "The Quick" in prose).
@@ -186,8 +266,18 @@ fn looks_like_person(full: &str) -> bool {
     }
     // Avoid month names ("March 2024" style handled by date regex first).
     let months = [
-        "january", "february", "march", "april", "may", "june", "july", "august", "september",
-        "october", "november", "december",
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
     ];
     for m in months {
         if lower.starts_with(m) {
@@ -291,13 +381,13 @@ pub fn extract_entities(text: &str) -> Vec<EntityCandidate> {
 /// Stopwords for keyword extraction (compact list, deterministic).
 pub const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "had", "has", "have",
-    "he", "her", "his", "how", "i", "if", "in", "into", "is", "it", "its", "of", "on", "or",
-    "our", "she", "so", "than", "that", "the", "their", "them", "then", "there", "these", "they",
-    "this", "to", "was", "we", "were", "what", "when", "where", "which", "who", "will", "with",
-    "you", "your", "not", "no", "can", "do", "does", "did", "done", "also", "may", "might",
-    "must", "shall", "should", "would", "could", "about", "after", "all", "any", "because",
-    "been", "before", "between", "both", "during", "each", "more", "most", "other", "over",
-    "such", "some", "only", "same", "such", "very", "use", "used", "using", "via", "while",
+    "he", "her", "his", "how", "i", "if", "in", "into", "is", "it", "its", "of", "on", "or", "our",
+    "she", "so", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this",
+    "to", "was", "we", "were", "what", "when", "where", "which", "who", "will", "with", "you",
+    "your", "not", "no", "can", "do", "does", "did", "done", "also", "may", "might", "must",
+    "shall", "should", "would", "could", "about", "after", "all", "any", "because", "been",
+    "before", "between", "both", "during", "each", "more", "most", "other", "over", "such", "some",
+    "only", "same", "such", "very", "use", "used", "using", "via", "while",
 ];
 
 /// Extract keyword candidates with TF weights (IDF applied later by the engine).
@@ -305,8 +395,7 @@ pub fn extract_keywords(text: &str, max: usize) -> Vec<(String, f32)> {
     let words = crate::embeddings::tokenize(&text.to_lowercase());
     let mut tf: Vec<(String, f32)> = Vec::new();
     for w in &words {
-        if w.len() < 3 || STOPWORDS.contains(&w.as_str()) || w.chars().all(|c| c.is_ascii_digit())
-        {
+        if w.len() < 3 || STOPWORDS.contains(&w.as_str()) || w.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
         match tf.iter_mut().find(|(s, _)| s == w) {
@@ -323,7 +412,11 @@ pub fn extract_keywords(text: &str, max: usize) -> Vec<(String, f32)> {
 }
 
 /// Build a full KnowledgeObject for a chunk of text.
-pub fn extract_knowledge(text: &str, df_lookup: &dyn Fn(&str) -> Option<i64>, total_docs: i64) -> KnowledgeObject {
+pub fn extract_knowledge(
+    text: &str,
+    df_lookup: &dyn Fn(&str) -> Option<i64>,
+    total_docs: i64,
+) -> KnowledgeObject {
     let entities = extract_entities(text);
     let mut keywords = extract_keywords(text, 12);
     // Apply IDF where available: score = tf * ln(1 + N / (df)).
@@ -526,10 +619,16 @@ fn match_sentence(sentence: &str) -> Vec<ExtractedClaim> {
 
 fn temporal_bounds(sentence: &str) -> (Option<String>, Option<String>) {
     let re_from = RE_VALID_FROM.get_or_init(|| {
-        regex::Regex::new(r"(?i)\b(?:since|from|as of|starting|in)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)").expect("vf regex")
+        regex::Regex::new(
+            r"(?i)\b(?:since|from|as of|starting|in)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)",
+        )
+        .expect("vf regex")
     });
     let re_until = RE_VALID_UNTIL.get_or_init(|| {
-        regex::Regex::new(r"(?i)\b(?:until|through|till|ending|by)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)").expect("vu regex")
+        regex::Regex::new(
+            r"(?i)\b(?:until|through|till|ending|by)\s+((?:19|20)\d{2}(?:-\d{2}-\d{2})?)",
+        )
+        .expect("vu regex")
     });
     let vf = re_from
         .captures(sentence)

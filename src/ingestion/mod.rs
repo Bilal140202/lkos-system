@@ -93,13 +93,29 @@ pub fn extract(filename: &str, bytes: &[u8]) -> Result<ExtractedDocument> {
         let raw = decode_utf8(bytes)?;
         (strip_markup(&raw), crate::types::DocType::Data, None)
     } else if ext == "docx" {
-        (extract_docx(bytes, filename)?, crate::types::DocType::Text, None)
+        (
+            extract_docx(bytes, filename)?,
+            crate::types::DocType::Text,
+            None,
+        )
     } else if ext == "xlsx" {
-        (extract_xlsx(bytes, filename)?, crate::types::DocType::Data, None)
+        (
+            extract_xlsx(bytes, filename)?,
+            crate::types::DocType::Data,
+            None,
+        )
     } else if ext == "pptx" {
-        (extract_pptx(bytes, filename)?, crate::types::DocType::Text, None)
+        (
+            extract_pptx(bytes, filename)?,
+            crate::types::DocType::Text,
+            None,
+        )
     } else if ext == "epub" {
-        (extract_epub(bytes, filename)?, crate::types::DocType::Text, None)
+        (
+            extract_epub(bytes, filename)?,
+            crate::types::DocType::Text,
+            None,
+        )
     } else if DATA_EXT.contains(&ext.as_str()) {
         let raw = decode_utf8(bytes)?;
         (raw, crate::types::DocType::Data, None)
@@ -112,7 +128,7 @@ pub fn extract(filename: &str, bytes: &[u8]) -> Result<ExtractedDocument> {
             _ => {
                 return Err(LkosError::UnsupportedFileType(format!(
                     "'{filename}': binary or unsupported format (supported: text, md, code, \
-                     html, csv/json/tsv/xml, docx, xlsx, pptx, epub" 
+                     html, csv/json/tsv/xml, docx, xlsx, pptx, epub"
                 )))
             }
         }
@@ -162,8 +178,7 @@ pub fn hash_text(s: &str) -> String {
 }
 
 fn decode_utf8(bytes: &[u8]) -> Result<String> {
-    String::from_utf8(bytes.to_vec())
-        .map_err(|_| LkosError::InvalidInput("invalid UTF-8".into()))
+    String::from_utf8(bytes.to_vec()).map_err(|_| LkosError::InvalidInput("invalid UTF-8".into()))
 }
 
 fn control_ratio(s: &str) -> f64 {
@@ -243,8 +258,22 @@ fn strip_markup(s: &str) -> String {
                 }
                 if matches!(
                     name.as_str(),
-                    "p" | "br" | "div" | "li" | "tr" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-                        | "table" | "section" | "article" | "header" | "footer" | "blockquote"
+                    "p" | "br"
+                        | "div"
+                        | "li"
+                        | "tr"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "table"
+                        | "section"
+                        | "article"
+                        | "header"
+                        | "footer"
+                        | "blockquote"
                 ) && !tag.starts_with('/')
                 {
                     out.push('\n');
@@ -270,7 +299,9 @@ fn strip_markup(s: &str) -> String {
                         "apos" => Some('\''),
                         "nbsp" => Some(' '),
                         _ => {
-                            if let Some(hex) = ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X")) {
+                            if let Some(hex) =
+                                ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X"))
+                            {
                                 u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
                             } else if let Some(dec) = ent.strip_prefix('#') {
                                 dec.parse::<u32>().ok().and_then(char::from_u32)
@@ -299,9 +330,14 @@ fn strip_markup(s: &str) -> String {
 // OOXML / zip-container extractors (DOCX, XLSX, PPTX, EPUB)
 // ---------------------------------------------------------------------------
 
-fn open_zip<'a>(bytes: &'a [u8], filename: &str) -> Result<zip::ZipArchive<std::io::Cursor<&'a [u8]>>> {
+fn open_zip<'a>(
+    bytes: &'a [u8],
+    filename: &str,
+) -> Result<zip::ZipArchive<std::io::Cursor<&'a [u8]>>> {
     zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| {
-        LkosError::InvalidInput(format!("'{filename}' is not a valid OOXML/zip container: {e}"))
+        LkosError::InvalidInput(format!(
+            "'{filename}' is not a valid OOXML/zip container: {e}"
+        ))
     })
 }
 
@@ -329,7 +365,9 @@ fn read_zip_entry(
 fn extract_docx(bytes: &[u8], filename: &str) -> Result<String> {
     let mut archive = open_zip(bytes, filename)?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(LkosError::InvalidInput("archive has too many entries".into()));
+        return Err(LkosError::InvalidInput(
+            "archive has too many entries".into(),
+        ));
     }
     let xml = read_zip_entry(&mut archive, "word/document.xml")?;
     Ok(ooxml_text(&xml, "w", "p", "t"))
@@ -339,7 +377,9 @@ fn extract_docx(bytes: &[u8], filename: &str) -> Result<String> {
 fn extract_xlsx(bytes: &[u8], filename: &str) -> Result<String> {
     let mut archive = open_zip(bytes, filename)?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(LkosError::InvalidInput("archive has too many entries".into()));
+        return Err(LkosError::InvalidInput(
+            "archive has too many entries".into(),
+        ));
     }
     let shared = if archive.file_names().any(|n| n == "xl/sharedStrings.xml") {
         read_zip_entry(&mut archive, "xl/sharedStrings.xml")?
@@ -355,7 +395,9 @@ fn extract_xlsx(bytes: &[u8], filename: &str) -> Result<String> {
 fn extract_pptx(bytes: &[u8], filename: &str) -> Result<String> {
     let mut archive = open_zip(bytes, filename)?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(LkosError::InvalidInput("archive has too many entries".into()));
+        return Err(LkosError::InvalidInput(
+            "archive has too many entries".into(),
+        ));
     }
     let mut names: Vec<String> = archive
         .file_names()
@@ -376,7 +418,9 @@ fn extract_pptx(bytes: &[u8], filename: &str) -> Result<String> {
 fn extract_epub(bytes: &[u8], filename: &str) -> Result<String> {
     let mut archive = open_zip(bytes, filename)?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(LkosError::InvalidInput("archive has too many entries".into()));
+        return Err(LkosError::InvalidInput(
+            "archive has too many entries".into(),
+        ));
     }
     let mut names: Vec<String> = archive
         .file_names()
@@ -409,9 +453,18 @@ fn ooxml_text(xml: &str, ns: &str, para: &str, text: &str) -> String {
     let t_open = format!("<{ns}:{text}");
     let t_close = format!("</{ns}:{text}>");
     let mut rest = xml;
-    while let Some(pos) = rest.find(&p_open_a).map(|p| (p, p_open_a.len())).or_else(|| {
-        rest.find(&p_open_b).map(|p| (p, rest[p..].find('>').map(|g| g + 1).unwrap_or(p_open_b.len())))
-    }) {
+    while let Some(pos) = rest
+        .find(&p_open_a)
+        .map(|p| (p, p_open_a.len()))
+        .or_else(|| {
+            rest.find(&p_open_b).map(|p| {
+                (
+                    p,
+                    rest[p..].find('>').map(|g| g + 1).unwrap_or(p_open_b.len()),
+                )
+            })
+        })
+    {
         let (start, open_len) = pos;
         let after = &rest[start + open_len..];
         let para_body = match after.find(&p_close) {
@@ -493,8 +546,8 @@ fn sheet_text(xml: &str, strings: &[String]) -> String {
             };
             let cell = &c_body[..c_end];
             let is_shared = cell.contains("t=\"s\"");
-            let value = extract_tag(cell, "<v", "</v>")
-                .or_else(|| extract_tag(cell, "<is", "</is>"));
+            let value =
+                extract_tag(cell, "<v", "</v>").or_else(|| extract_tag(cell, "<is", "</is>"));
             if let Some(mut v) = value {
                 if let Some(gt) = v.find('>') {
                     v = v[gt + 1..].to_string();
