@@ -1,0 +1,39 @@
+[package]
+name = "lkos"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "LKOS — Local Knowledge Object System: an offline, privacy-first hybrid retrieval and knowledge engine (SQLite + FTS5 + embeddings + RRF + entities + claims + provenance)"
+license = "MIT"
+repository = "https://github.com/Bilal140202/lkos-system"
+readme = "README.md"
+keywords = ["search", "retrieval", "knowledge-graph", "sqlite", "local-first"]
+categories = ["database", "text-processing", "science"]
+
+[lib]
+name = "lkos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lkos-cli"
+path = "src/bin/lkos-cli.rs"
+
+[[bin]]
+name = "lkos-bench"
+path = "src/bin/lkos-bench.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

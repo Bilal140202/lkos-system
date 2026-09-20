@@ -1,0 +1,23 @@
+# Build artifacts
+/target
+**/*.rs.bk
+
+# Local databases used for scratch testing
+*.lkos.db
+*.lkos.db-wal
+*.lkos.db-shm
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python caches if tools are used
+__pycache__/
+
+# Engine scratch
+*.lkos
+library.lkos*
