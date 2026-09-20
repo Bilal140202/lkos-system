@@ -31,3 +31,29 @@ Maturity ladder (v0.1 = this release). Each version ships only when its
 - Migration discipline guarantee (all past versions openable)
 - Parser fuzzing suite; security review pass; public benchmark report on a
   real (non-synthetic) corpus with human-labeled probes
+
+---
+
+## v0.9 delivered (this release)
+
+- [x] Real semantic embeddings: LSA (PPMI + randomized SVD), deterministic,
+      corpus-trained; hashing fallback; per-chunk model lineage
+- [x] Incremental model migration: stale-chunk re-embed jobs, measured 22.9k chunks/s
+- [x] Retrieval 2.0: BM25 scores preserved, single-pass model-filtered dense scan,
+      deterministic entity channel, full-window MMR, lexical-overlap reranker,
+      freshness re-rank for Latest
+- [x] Evidence 2.0: conflict taxonomy, negation, unit normalization, offsets, indexed checks
+- [x] Entity resolution 2.0: alias/fuzzy stages, public alias+merge APIs, audit log
+- [x] Graph 2.0: typed RELATES_TO_*, multi-hop BFS, centrality, graph-correct delete
+- [x] Document intelligence: DOCX/XLSX/PPTX/EPUB, proper HTML, bomb guards, optional PDF feature
+- [x] Jobs: atomic claim, backoff, dead-letter, cancellation, progress, worker count
+- [x] Evaluation: golden qrels + ablation harness + red-team suite (75 tests total)
+
+## Next (ordered by whitepaper section 8)
+
+1. BEIR-scale external evaluation
+2. HNSW/IVF ANN with measured crossover
+3. Pretrained local encoders via EmbeddingProvider (ONNX/fastembed)
+4. Cross-encoder reranking behind the ablation harness
+5. NER-grade extraction on a labeled slice
+6. Bitemporal query planning over claim validity

@@ -1,13 +1,13 @@
 # LKOS: A Local-First, Provenance-Aware Knowledge Engine — Design, Implementation, and Evaluation of an Offline Neuro-Symbolic Retrieval System on a Single SQLite File
 
 **Bilal140202**
-`lkos-system` · v0.1.0 · MIT License
+`lkos-system` · v0.9.0 · MIT License
 
 ---
 
 ## Abstract
 
-Retrieval-Augmented Generation (RAG) systems typically defer all intelligence to query time: documents are chunked and embedded once, and every question pays the full cost of search, assembly, and grounding from scratch. We present **LKOS** (Local Knowledge Object System), a knowledge engine that inverts this division of labor. LKOS front-loads structure into ingestion: every source document is deterministically decomposed into *chunks*, *knowledge objects* (typed entities, keywords, SVO claims), an *entity co-occurrence graph*, and a complete *provenance trail* — all persisted transactionally in a single portable SQLite database. At query time, a deterministic rule-based planner classifies intent and routes a hybrid retrieval stack: sparse BM25 (FTS5, Porter-stemmed) fused with dense feature-hashed embeddings via Reciprocal Rank Fusion (k = 60), boosted by positional authority, exact-phrase, entity, and section-title signals, then diversified with Maximal Marginal Relevance. Every result explains *why* it was retrieved. Contradictory numeric claims across documents are detected and **preserved as first-class conflicts** rather than silently merged. The engine is 100% local (zero network, zero telemetry), fully useful without any LLM, and integrates optional local models through a provider abstraction (llama.cpp subprocess support included). We describe the architecture, data model, retrieval algorithms, contradiction engine, and query planner; we report measured performance (300 documents / 3,600 chunks: hybrid p50 = 14.9 ms, lexical p50 = 2.5 ms; self-supervised Recall@10 = 1.000, MRR = 1.000) on commodity hardware; and we ship 42 automated tests, a three-OS CI pipeline, and an honest ledger of what v0.1 does **not** do. LKOS is released as an embeddable Rust library, a CLI, and a benchmark harness.
+Retrieval-Augmented Generation (RAG) systems typically defer all intelligence to query time: documents are chunked and embedded once, and every question pays the full cost of search, assembly, and grounding from scratch. We present **LKOS** (Local Knowledge Object System), a knowledge engine that inverts this division of labor. LKOS front-loads structure into ingestion: every source document is deterministically decomposed into *chunks*, *knowledge objects* (typed entities, keywords, SVO claims), an *entity co-occurrence graph*, and a complete *provenance trail* — all persisted transactionally in a single portable SQLite database. At query time, a deterministic rule-based planner classifies intent and routes a hybrid retrieval stack: sparse BM25 (FTS5, Porter-stemmed) fused with corpus-trained LSA embeddings (deterministic PPMI + randomized SVD, with feature-hashing cold-start fallback) via Reciprocal Rank Fusion (k = 60) plus a deterministic lexical-overlap reranker, boosted by positional authority, exact-phrase, entity, and section-title signals, then diversified with Maximal Marginal Relevance. Every result explains *why* it was retrieved. Contradictory claims are classified through a typed taxonomy (same-period disagreement, cross-period, undated, negation) after unit/magnitude normalization and **preserved as first-class conflicts** rather than silently merged. The engine is 100% local (zero network, zero telemetry), fully useful without any LLM, and integrates optional local models through a provider abstraction (llama.cpp subprocess support included). We describe the architecture, data model, retrieval algorithms, contradiction engine, and query planner; we report measured performance (200 documents / 2,400 chunks: hybrid+rerank p50 = 7.4 ms, dense-LSA p50 = 6.3 ms, lexical p50 = 3.5 ms; LSA training 0.06 s per 2,400 chunks and re-embedding at 22.9k chunks/s; golden-set hybrid MRR = 1.000, nDCG@10 = 0.966; self-supervised Recall@10 = 1.000) on commodity hardware; and we ship 75 automated tests, a three-OS CI pipeline, and an honest ledger of what v0.9 does **not** do (ANN, pretrained encoders, NER-grade extraction, BEIR-scale evaluation). LKOS is released as an embeddable Rust library, a CLI, and a benchmark harness.
 
 **Keywords:** local-first software, hybrid retrieval, BM25, reciprocal rank fusion, knowledge objects, entity resolution, claim extraction, contradiction detection, provenance, SQLite, FTS5, query planning, RAG, on-device AI
 
@@ -27,7 +27,7 @@ The user-experience target is unchanged from that specification: **ask any quest
 
 ### 1.2 Contributions
 
-This repository is a working v0.1 of that thesis. Concretely:
+This repository is a working **v0.9** of that thesis — since v0.1, the dense channel is a **corpus-trained LSA semantic embedder** (deterministic PPMI + randomized SVD, hashing fallback for cold start), retrieval adds a deterministic reranker with preserved BM25 scores and model-filtered single-pass dense scans, the evidence layer gains a **conflict taxonomy** (same-period / cross-period / undated / negation) with unit normalization, entity resolution gains multi-stage fuzzy linking with public alias/merge APIs, the graph becomes typed and graph-correct under deletion, ingestion covers DOCX/XLSX/PPTX/EPUB with decompression-bomb guards, and the job system is production-shaped (atomic claim, exponential backoff, dead-letter, cancellation). The evidence layer is fully exercised by the benchmark (4,800 claims / 9,548 conflicts on 200 docs) and the evaluation is now a **graded golden-qrels suite with ablations** (hybrid MRR 1.000, nDCG@10 0.966 on the 16-query golden set; lexical 0.938 / 0.873). Concretely:
 
 1. **A canonical knowledge data model** (documents → chunks → knowledge objects → entities/claims/relationships → provenance) implemented transactionally in SQLite v1–v4 migrations (§4).
 2. **A hybrid, explainable retrieval stack**: FTS5 BM25 + dense feature-hashed vectors, fused with Reciprocal Rank Fusion, boosted by deterministic signals, diversified by MMR, with per-hit `matched_by` explanations (§5).
@@ -272,7 +272,7 @@ Interpretation, with the honesty the project demands: (a) lexical p50 under 3 ms
 
 ---
 
-## 10. Limitations and Non-Goals (v0.1)
+## 10. Limitations and Non-Goals (see also docs/NON_GOALS.md and whitepaper §7)
 
 The project standard is that **every documented capability maps to code + test + docs** — and symmetrically, every missing capability is registered:
 
@@ -288,11 +288,12 @@ The project standard is that **every documented capability maps to code + test +
 
 ## 11. Roadmap
 
-The maturity ladder follows the repository audit (v0.1 = *this release*, core engine, tested & benchmarked):
+The maturity ladder follows the repository audit (v0.9 = *this release*, semantic engine, tested & benchmarked):
 
 | Version | Theme | Items |
 |---|---|---|
-| **0.1 (this release)** | Core engine | SQLite substrate, hybrid RRF retrieval, entities/graph/claims/conflicts, provenance, planner, jobs/events, CLI, bench, 42 tests, CI |
+| **0.1** | Core engine | SQLite substrate, hybrid RRF retrieval, entities/graph/claims/conflicts, provenance, planner, jobs/events, CLI, bench, 42 tests, CI |
+| **0.9 (this release)** | Semantic engine | LSA embeddings + model migration, reranking, BM25 score preservation, conflict taxonomy + unit normalization, multi-stage entity resolution + merge APIs, typed graph + graph-correct delete, DOCX/XLSX/PPTX/EPUB + bomb guards, production jobs, golden-qrels evaluation + red-team suite, 75 tests |
 | 0.2 | Retrieval depth | ANN (HNSW) behind `EmbeddingProvider`/index abstraction, FastEmbed provider, MMR tuning suite, retrieval golden-set expansion |
 | 0.3 | Knowledge depth | embedding-assisted entity linking, relationship typing, hierarchical summaries (RAPTOR-style), PDF/DOCX extractors |
 | 0.4 | Incremental engine | per-chunk reuse on re-index (chunk-hash invalidation), watcher-driven re-ingestion, embeddings versioning |
@@ -362,7 +363,7 @@ lkos-system/
 
 ## 13. Conclusion
 
-LKOS v0.1 demonstrates that the *knowledge-operating-system* thesis from the original specification — front-load structure, keep the engine LLM-optional, preserve provenance and disagreement, explain every result — is implementable as a compact, embeddable Rust core on top of a single SQLite file, with retrieval latency two orders of magnitude inside the interactive budget and an engineering envelope (tests, CI, benchmarks, non-goals) that keeps future claims checkable. The gaps that remain — ANN-scaled dense search, semantic embeddings, richer extractors — are extension points already shaped by trait boundaries (`EmbeddingProvider`, `LlmProvider`) and versioned extractors, which is precisely where the next increments of this roadmap will land.
+LKOS v0.9 demonstrates that the *knowledge-operating-system* thesis from the original specification — front-load structure, keep the engine LLM-optional, preserve provenance and disagreement, explain every result — is implementable as a compact, embeddable Rust core on top of a single SQLite file, with retrieval latency two orders of magnitude inside the interactive budget and an engineering envelope (tests, CI, benchmarks, non-goals) that keeps future claims checkable. The gaps that remain — ANN-scaled dense search, pretrained encoders, NER-grade extraction, BEIR-scale evaluation — are extension points already shaped by trait boundaries (`EmbeddingProvider`, `LlmProvider`) and versioned extractors, which is precisely where the next increments of this roadmap will land.
 
 ---
 

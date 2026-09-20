@@ -22,3 +22,24 @@ criteria that would justify building it. Documentation never outruns implementat
 | Kubernetes / Kafka / microservices | Category error for an embedded engine | Never — unless the engine is forked into a server, which would be a different product |
 | LLM inside the query path | Planner is deterministic by design (ADR-008) | Ablation shows an LLM planner beats rules on a held-out query set |
 | Human-labeled benchmark claims | Self-supervised numbers only, labeled as such | A committed golden dataset with human judgments |
+
+---
+
+## v0.9 deltas (what changed)
+
+Moved OUT of non-goals (now implemented): semantic embeddings (LSA provider),
+BM25 score preservation, entity alias/merge APIs, graph-correct deletion,
+DOCX/XLSX/PPTX/EPUB ingestion, job backoff/dead-letter/cancellation.
+
+Still non-goals (with status):
+- **ANN/HNSW** — brute force with documented cap; adoption gated on measured
+  crossover (research frontier 2).
+- **Pretrained neural encoders as default** — local-first zero-download
+  contract; ONNX/fastembed stays an optional-provider design task.
+- **NER-grade extraction / NLI contradiction detection** — deterministic
+  regexes, honestly labeled; frontier item 5.
+- **OCR, audio, video** — multimodal foundation later.
+- **Multi-tenant ACLs, E2E encryption** — single-user local file first.
+- **Learned sparse retrieval (SPLADE-style)** — requires model artifacts.
+- **Graph database engines** — SQL traversal sufficient at current scale;
+  must benchmark better before adoption.
