@@ -34,7 +34,7 @@ This repository is a working **v0.9** of that thesis — since v0.1, the dense c
 3. **A deterministic knowledge layer**: typed entity extraction, canonical entity resolution with legal-suffix folding, co-occurrence graph construction, SVO claim extraction, and a numeric **contradiction engine** that preserves disagreement (§6).
 4. **A rule-based query planner** with intent-specific channel weights and a pre-built-summary fast path (§7).
 5. **An LLM-optional integration layer**: `LlmProvider` trait with null/fake/llama.cpp-subprocess providers, grounded prompting, and background summarization that degrades gracefully (§8).
-6. **An engineering discipline**: 42 tests covering end-to-end invariants (idempotent ingestion, delete cascades, backup/restore round-trip, LLM-optional degradation), a reproducible benchmark harness, zero-clippy CI on Linux/macOS/Windows, and an explicit non-goals register (§9–§10).
+6. **An engineering discipline**: 75 tests covering end-to-end invariants (idempotent ingestion, delete cascades, backup/restore round-trip, LLM-optional degradation), an adversarial red-team suite, a graded golden-qrels evaluation with per-mode ablations, a reproducible benchmark harness, zero-clippy CI on Linux/macOS/Windows, and an explicit non-goals register (§9–§10).
 
 Everything documented in this paper corresponds to executable, tested code in this repository. Where a capability is *not* implemented (e.g., HNSW indexing, PDF extraction), we say so explicitly (§10) — the repository's own audit standard demands that documentation never outrun implementation.
 
@@ -42,7 +42,7 @@ Everything documented in this paper corresponds to executable, tested code in th
 
 ## 2. Positioning Against Existing Systems
 
-| Capability | Traditional RAG stacks | Vector DBs (Qdrant, LanceDB, …) | Search engines (Elastic, …) | GraphRAG | **LKOS v0.1** |
+| Capability | Traditional RAG stacks | Vector DBs (Qdrant, LanceDB, …) | Search engines (Elastic, …) | GraphRAG | **LKOS v0.9** |
 |---|---|---|---|---|---|
 | Deployment | app + server + services | server/service | JVM cluster | app + LLM pipeline | **single embedded file** |
 | Offline operation | partial | partial | no | partial | **by construction** |
@@ -88,8 +88,8 @@ The engine is governed by invariants that are enforced in code and pinned by tes
 │ intent →     │ entities · resolution ·      │ extract · normalize  │
 │ plan →       │ co-occurrence graph ·        │ · hash               │
 │ retrieve →   │ claims · conflicts           │ chunk (prose/code)   │
-│ fuse → MMR → │ (knowledge.rs, entities/,    │ embeddings (trait +  │
-│ assemble     │ claims/)                     │ hashing provider)    │
+│ fuse → rerank │ (knowledge.rs, entities/,   │ embeddings (trait +  │
+│ → MMR → assemble │ claims/)                  │ LSA · hashing)       │
 ├──────────────┴──────────────────────────────┴──────────────────────┤
 │ Optional local AI:  LlmProvider (null · fake · llama.cpp subprocess)│
 ├────────────────────────────────────────────────────────────────────┤
@@ -98,18 +98,18 @@ The engine is governed by invariants that are enforced in code and pinned by tes
 │ Storage: SQLite (WAL) — documents · chunks · chunks_fts (FTS5) ·   │
 │ entities · entity_aliases · entity_mentions · claims ·             │
 │ claim_conflicts · relationships · provenance · term_df ·           │
-│ jobs · engine_meta      [schema v4, forward migrations]            │
+│ lsa_terms · merge_log · jobs  [schema v5, forward migrations]      │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 Canonical schema (SQLite, `PRAGMA user_version = 4`)
+### 4.2 Canonical schema (SQLite, `PRAGMA user_version = 5`)
 
-Four sequential migrations define the substrate. The design follows the audit roadmap's recommendation: *relational first, graph where relational queries are demonstrably sufficient*.
+Five sequential migrations define the substrate (v5 adds the semantic/incremental layer). The design follows the audit roadmap's recommendation: *relational first, graph where relational queries are demonstrably sufficient*.
 
 | Table | Purpose | Key columns |
 |---|---|---|
 | `documents` | source identity + lifecycle | `path`, `filename`, `doc_type`, `content_hash` (SHA-256, unique), `readiness_state`, `summary`, `chunk_count`, version pins (`extractor/chunker/embedding/knowledge_version`) |
-| `chunks` | atomic retrieval units | `document_id`, `chunk_index`, `text`, `section_title`, `kind`, offsets, `authority_score`, `content_hash`, `embedding` (BLOB f32), `knowledge_json` |
+| `chunks` | atomic retrieval units | `document_id`, `chunk_index`, `text`, `section_title`, `kind`, offsets, `authority_score`, `content_hash`, `embedding` (BLOB f32), `embedding_model` (per-chunk model lineage), `knowledge_json` |
 | `chunks_fts` | FTS5 external-content lexical index (porter unicode61) | kept consistent by AFTER INSERT/DELETE/UPDATE triggers — the index **cannot drift** from the canonical table |
 | `entities` / `entity_aliases` / `entity_mentions` | resolved nodes + surface forms + typed, offset-bearing mentions | `canonical_key` (unique), `entity_type`, `mention_count`, aliases |
 | `claims` | extracted subject–predicate–object facts | `subject_key`, `predicate_key`, sentence, confidence, `valid_from/until`, extractor |
@@ -117,7 +117,8 @@ Four sequential migrations define the substrate. The design follows the audit ro
 | `relationships` | co-occurrence edges | unique `(source, target, type)`, weight |
 | `provenance` | evidence trail of every derived artifact | artifact type/id, document/chunk, offsets, extractor + version |
 | `term_df` | keyword document frequencies (IDF weighting) | term → df |
-| `jobs` | background work queue | kind, payload, status, attempts/max, `recover_running_jobs()` requeues orphans on open |
+| `lsa_terms` | corpus-trained LSA model (term → latent vector) | persisted so the model survives reopen; corruption is a typed `EmbeddingMismatch` error, never a silent space mix |
+| `jobs` | background work queue | kind, payload, status, attempts/max, `run_at` (exponential backoff release), `progress`, dead-letter on exhaustion, `recover_running_jobs()` requeues orphans on open |
 
 Two structural decisions deserve emphasis. **(a) External-content FTS5 with triggers**: the lexical index is derived data with enforced consistency, so deletes cannot strand stale lexical entries (tested via the delete-cascade test). **(b) `content_hash` as document identity**: re-ingesting identical bytes is a no-op; changed bytes create a new versioned row and release the old row's path (tested: `ingest_is_idempotent_on_identical_content`, `changed_content_creates_new_document`) — the incremental-indexing primitive the audit roadmap calls Stage 5.
 
@@ -125,7 +126,7 @@ Two structural decisions deserve emphasis. **(a) External-content FTS5 with trig
 
 `ingest_bytes` / `ingest_file` run a fixed, synchronous-by-default pipeline:
 
-1. **Extract** (`ingestion::extract`): extension-routed; markdown/code/data/text are decoded as UTF-8; HTML/XML markup stripped; binary content rejected with a typed error (no silent garbage).
+1. **Extract** (`ingestion::extract`): extension-routed; markdown/code/data/text are decoded as UTF-8; HTML/XML parsed structurally (script/style dropped, entities decoded); DOCX/XLSX/PPTX/EPUB extracted through bounded OOXML readers (64 MiB raw / 256 MiB decompressed / 4096-entry caps); PDF behind the optional `pdf` cargo feature; unknown binary content rejected with a typed error (no silent garbage).
 2. **Normalize**: CRLF→LF, control-character removal, blank-run collapse. Markdown structure (headings) is deliberately preserved — the chunker consumes it.
 3. **Hash**: SHA-256 of raw bytes; short-circuits duplicate ingestion.
 4. **Chunk** (§4.4).
@@ -146,7 +147,7 @@ The chunker (`chunking::chunk_document`, versioned `chunk-v1.1.0`) is determinis
 
 ### 4.5 Background jobs, crash safety, events
 
-With `synchronous_ingestion = false`, ingestion enqueues `process_document` jobs; a worker thread claims them with attempt accounting (`max_attempts`, exponential-friendly retry hooks) and `fail_and_maybe_retry`. On open, `recover_running_jobs` requeues anything left `running` by a crash — the database never requires manual surgery after power loss (WAL + `synchronous=NORMAL`). The `EventBus` broadcasts typed lifecycle events (`document.added/ready/deleted`, `document.status`, `document.summary-ready`, `entity.discovered`, `claim.extracted`, `knowledge.updated`) so applications subscribe instead of polling (tested: `event_stream_reports_lifecycle`).
+With `synchronous_ingestion = false`, ingestion enqueues `process_document` jobs; worker threads claim them **atomically** (immediate transaction + conditional UPDATE), requeue failures with **exponential backoff** (`run_at` release time, capped), **dead-letter** after `max_attempts` with payload and error preserved, support cooperative **cancellation** and **progress** reporting, and honor the configured `worker_threads`. On open, `recover_running_jobs` requeues anything left `running` by a crash — the database never requires manual surgery after power loss (WAL + `synchronous=NORMAL`). The `EventBus` broadcasts typed lifecycle events (`document.added/ready/deleted`, `document.status`, `document.summary-ready`, `entity.discovered`, `claim.extracted`, `knowledge.updated`) so applications subscribe instead of polling (tested: `event_stream_reports_lifecycle`).
 
 ---
 
@@ -157,7 +158,7 @@ With `synchronous_ingestion = false`, ingestion enqueues `process_document` jobs
 Given a query, the executor runs up to three channels and fuses:
 
 - **Sparse / lexical**: FTS5 `MATCH` over `chunks_fts` (Porter stemming, unicode61). User queries are sanitized into quoted prefix tokens joined with `AND` (`fts_escape`) — injection-safe by construction, exact terms and identifiers surface through this channel.
-- **Dense**: feature-hashing embedder (`HashingEmbedder`, 256-dim, L2-normalized): each token hashes to `d` buckets with signs, weighted sublinearly by term frequency. Cosine similarity via brute-force scan bounded by `max_dense_scan` (250k) — an honest, documented O(N) choice for local-library scale (HNSW is registered as future work, not claimed).
+- **Dense**: a **corpus-trained LSA provider** (`lsa-pmi-svd-v1`: PPMI weighting + randomized truncated SVD, deterministic by construction, persisted in `lsa_terms`) with a feature-hashing cold-start fallback (`hashing-lex-v1`, below `semantic_min_chunks`). Each chunk records the model that produced its vector; query-time dense search is a **single-pass, model-filtered** cosine scan bounded by `max_dense_scan` (250k) — an honest, documented O(N) choice for local-library scale (HNSW is registered as future work, not claimed).
 - **Entity**: for entity-lookup plans, the entity index contributes chunks mentioning matched entities.
 
 ### 5.2 Fusion and ranking
@@ -168,7 +169,7 @@ Channel ranks fuse with **Reciprocal Rank Fusion** [Cormack et al., 2009], `k = 
 score(d) = w_v · 1/(k + r_dense(d))  +  w_fts · 1/(k + r_lexical(d))
 ```
 
-with intent-tuned weights (§7). The fused score is then multiplied by the chunk's **authority** multiplier and boosted by deterministic metadata signals: exact phrase containment (+0.08), known-entity mention, and section-title match. Finally **Maximal Marginal Relevance** [Carbonell & Goldstein, 1998] with λ = 0.7 re-selects the top-k for relevance/diversity balance, preventing one document's near-duplicate paragraphs from monopolizing the result page. A `max_per_document` cap (default 3) additionally governs the assembled context.
+with intent-tuned weights (§7). The fused score is then blended 50/50 with a **deterministic lexical-overlap reranker** (query-term coverage with length normalization) over the top-24 candidates — the reranker can only reorder channel-surfaced candidates, never inject unseen ones — multiplied by the chunk's **authority** multiplier, and boosted by deterministic metadata signals: exact phrase containment (+0.08), known-entity mention, and section-title match. Under `Latest` intent a freshness re-rank replaces v0.1's hard temporal filter, so the newest evidence can never be silently dropped. Finally **Maximal Marginal Relevance** [Carbonell & Goldstein, 1998] with λ = 0.7 re-selects the top-k for relevance/diversity balance over embeddings prefetched for the **full candidate window**, preventing one document's near-duplicate paragraphs from monopolizing the result page. A `max_per_document` cap (default 3) additionally governs the assembled context.
 
 ### 5.3 Explainability
 
@@ -200,17 +201,17 @@ Deterministic regex/heuristic extractors produce typed candidates with character
 
 ### 6.2 Canonical resolution
 
-Surface forms fold to a canonical key: lowercased, punctuation-split, **legal suffixes stripped** (`OpenAI Inc.` ≡ `openai`; `Acme Corp.` ≡ `ACME`). Aliases accumulate per entity; mention counts aggregate; deletion decrements them (the delete-cascade test pins this). The v0.1 resolver is deliberately conservative — no embedding-based linking yet (registered in `NON_GOALS`).
+Resolution is multi-stage: (1) surface forms fold to a canonical key (lowercased, punctuation-split, **legal suffixes stripped** — `OpenAI Inc.` ≡ `openai`; `Acme Corp.` ≡ `ACME`); (2) an **alias table** match, including user-supplied aliases via the public `add_entity_alias` API; (3) **type-guarded Jaro–Winkler fuzzy linking** at a deliberately strict 0.93 threshold with first-letter blocking — false merges poison a graph, so recall of the linker is consciously sacrificed. Merges are auditable (`entity_merge_log`); aliases accumulate per entity; mention counts aggregate; deletion decrements them (the delete-cascade test pins this). Embedding-based linking remains registered in `NON_GOALS`.
 
 ### 6.3 Claims and the contradiction engine
 
 Sentence-scope SVO patterns extract claims in three families: *numeric metrics* ("X revenue was $10M"), *actions* ("X acquired Y"), *copulas* ("X is Y"), each with optional temporal validity bounds parsed from discourse markers ("since 2024", "until Q3"). Claims persist with their sentence, source document/chunk, extractor identity, and confidence.
 
-The **contradiction engine** then enforces P6: for claims sharing `(subject_key, predicate_key)` where both objects parse to positive numbers, a relative delta > 5% raises a `claim_conflicts` row containing both claim ids, the delta, and an explanation that distinguishes *same-period disagreement* from *cross-period evolution* using the parsed validity bounds. Applications surface this instead of a single "merged truth": the engine keeps both claims, both sources, both dates — dispute preservation as a database guarantee (tested: `claims_and_conflicts_are_detected_and_preserved`).
+The **contradiction engine** then enforces P6 with a typed taxonomy: numeric objects pass through a **magnitude/unit normalizer** (`$10 million` ≡ `$10M` ≡ 10 000 000 — commas, %, B/K handled), negation is detected and lowers confidence, and for claims sharing `(subject_key, predicate_key)` whose normalized objects disagree by > 5%, a `claim_conflicts` row is raised carrying both claim ids, the delta, a **conflict kind** (`same-period disagreement` / `cross-period evolution` / `undated` / `negation`), and a human-readable explanation with both validity periods. Detection runs through an **indexed lookup with a bounded comparison window** (40 recent claims, ≤ 4 conflict rows per claim) instead of a quadratic pair scan. Applications surface this instead of a single "merged truth": the engine keeps both claims, both sources, both dates — dispute preservation as a database guarantee (tested: `claims_and_conflicts_are_detected_and_preserved`).
 
 ### 6.4 The co-occurrence graph
 
-Entities co-mentioned in a chunk are linked with a weighted, symmetric `CO_OCCURS_WITH` edge (unique per pair, weight = co-occurrence count). `graph::neighborhood(entity_id)` returns the one-hop view: center node, neighbors with edges, and the mentioning documents. This is *deliberately* not a graph database — the audit roadmap's benchmark-first doctrine applies, and 1-hop entity pages are the demonstrated demand (ADR in `docs/`).
+Entities co-mentioned in a chunk are linked with a weighted, symmetric `CO_OCCURS_WITH` edge (unique per pair, weight = co-occurrence count), and claim-derived **predicate-typed `RELATES_TO_*` edges** are layered on top. Reads: one-hop neighborhoods (`graph::neighborhood`), **multi-hop BFS** (depth ≤ 3, deduplicated), and degree centrality. Deletion is **graph-correct**: removing a document recomputes all edges around its entities from surviving mentions, so phantom relations cannot survive (test-asserted). This is *deliberately* not a graph database — the audit roadmap's benchmark-first doctrine applies (ADR in `docs/`).
 
 ---
 
@@ -247,25 +248,27 @@ Grounded answering (`ask`) composes planner → retrieval → context assembly �
 
 ### 9.1 Methodology
 
-`lkos-bench` (shipped binary) generates a deterministic synthetic corpus (xorshift64*; 300 documents × 12 paragraphs ≈ 1.2 M chars → 3,600 chunks), ingests it into an in-memory library, and measures: ingestion throughput; per-mode query latency over 150 queries after warm-up (p50/p95/p99); and **self-supervised retrieval quality** — probe queries name the generating `(org, topic, year)` triple, ground truth is the corresponding document filename(s) from a deterministically regenerated manifest, and we score Recall@10 / MRR over the hybrid stack. The harness runs fully offline.
+`lkos-bench` (shipped binary) generates a deterministic synthetic corpus (xorshift64*; 200 documents × 12 paragraphs ≈ 1.07 M chars → 2,400 chunks), ingests it, **trains the LSA semantic model and re-embeds**, and measures: ingestion throughput; LSA training and re-embedding throughput; per-mode query latency over 60 queries after warm-up (p50/p95/p99); **self-supervised retrieval quality** (probe queries name the generating `(org, topic, year)` triple; ground truth is the corresponding document filename from a deterministically regenerated manifest); and **library statistics** exercising the evidence layer end-to-end (claims, conflicts, graph edges). The harness runs fully offline. Golden-qrels numbers (16 queries, graded judgments, per-mode ablations) live in `tests/golden_eval.rs` and are reported alongside §9.2.
 
-### 9.2 Results (commodity container, 2 vCPU, release build, v0.1.0)
+### 9.2 Results (commodity container, 2 vCPU, release build, v0.9.0; archived in `benchmarks/results/v0.9.0-run1.txt`)
 
-| Metric | Value |
-|---|---|
-| Ingestion throughput | 8.0 docs/s · **96 chunks/s** (300 docs, 3,600 chunks, 37.4 s) |
-| Lexical (BM25) query | **p50 2.53 ms** · p95 4.01 ms · p99 4.22 ms |
-| Dense (hashing, brute force) | p50 14.17 ms · p95 14.40 ms · p99 15.13 ms |
-| **Hybrid (RRF + boosts + MMR)** | **p50 14.87 ms** · p95 16.78 ms · p99 17.16 ms |
-| Recall@10 (self-supervised) | **1.000** |
-| MRR (self-supervised) | **1.000** |
-| Derived knowledge on corpus | 3,552 entities · 12,000 mentions · 7,202 relationships · 15,600 provenance rows |
+| Metric | v0.1 (300 docs, 3.6k chunks) | v0.9 (200 docs, 2.4k chunks) |
+|---|---|---|
+| Ingestion throughput | 8.0 docs/s · 96 chunks/s | 6.3 docs/s · 76 chunks/s * |
+| Lexical (BM25) p50 / p99 | 2.53 / 4.22 ms | 3.47 / 4.94 ms |
+| Dense p50 / p99 | 14.17 / 15.13 ms (hashing, N+1 fetch) | **6.28 / 6.66 ms** (LSA, single-pass) |
+| **Hybrid (RRF + rerank + MMR) p50 / p99** | 14.87 / 17.16 ms | **7.43 / 8.12 ms** |
+| LSA train / re-embed | — | **0.06 s** per 2,400 chunks / **22.9k chunks/s** |
+| Recall@10 (self-supervised) | 1.000 | **1.000** |
+| MRR (self-supervised) | 1.000 | **1.000** |
+| Golden qrels (16 queries, graded) | — | hybrid **MRR 1.000 · nDCG@10 0.966** (lexical 0.938 / 0.873) |
+| Derived knowledge | 3,552 entities · 12,000 mentions · 0 claims · 0 conflicts | 2,384 entities · 22,400 mentions · **4,800 claims · 9,548 conflicts** · 10,658 relationships |
 
-Interpretation, with the honesty the project demands: (a) lexical p50 under 3 ms at 3.6k chunks validates the FTS5 substrate; (b) the dense channel dominates hybrid latency because v0.1 scans all chunk vectors — the cost curve and the HNSW escape hatch are documented, not hidden; (c) hybrid p50 ≈ 15 ms means retrieval is ~0.5% of the 3-second answer budget, leaving the remainder for optional generation; (d) perfect self-supervised Recall@10 is *expected* on synthetic data whose probes echo document titles — it validates the fusion stack end-to-end (planner → channels → RRF → MMR → assembly) and guards against regressions; it is **not** a human benchmark, and `benchmarks/results/` exists precisely so real-corpus numbers replace these over time. Ingestion at 96 chunks/s is knowledge-extraction-dominated (per-chunk regex passes + provenance inserts) and is the next optimization target.
+\* v0.9 ingestion extracts ~24 claims per document, runs indexed conflict detection, and builds the typed graph — strictly more work per document; the dense-channel speedup (−55% p50) comes from replacing v0.1's N+1 blob fetch with one model-filtered scan. Interpretation, with the honesty the project demands: (a) hybrid p50 ≈ 7.4 ms means retrieval is ~0.25% of the 3-second answer budget; (b) perfect self-supervised Recall@10 is *expected* on synthetic data whose probes echo document titles — it validates the fusion stack end-to-end and guards against regressions; it is **not** a human benchmark; (c) the golden-qrels suite is the regression-protected quality floor, and its 16-query size is a documented limitation (§10). `benchmarks/results/` exists precisely so real-corpus numbers replace these over time.
 
 ### 9.3 Verification
 
-- **42 automated tests** (21 end-to-end engine tests, 19 unit/quality tests incl. a fixed golden-retrieval corpus, 2 doc-tests): all green.
+- **75 automated tests** (21 end-to-end engine invariants, 19 unit-quality incl. the golden-retrieval corpus, 9 semantic-layer, 12 adversarial red-team, 2 golden-qrels evaluation, 10 module units for LSA/Jaro–Winkler/temporal, 2 doc-tests): all green.
 - **Zero clippy warnings** under `-D warnings`; `cargo fmt` enforced.
 - **CI**: Linux + macOS + Windows matrices running fmt, clippy, tests, release build (`.github/workflows/ci.yml`).
 - Property-style invariants pinned by tests: idempotent ingestion; changed-content versioning; delete-cascades (chunks, mentions, provenance, claim conflicts via FK); backup/restore round-trip searchable; restart preservation; LLM-optional degradation; structural refusal without evidence; empty-input rejection without panic.
@@ -276,13 +279,14 @@ Interpretation, with the honesty the project demands: (a) lexical p50 under 3 ms
 
 The project standard is that **every documented capability maps to code + test + docs** — and symmetrically, every missing capability is registered:
 
-- **Dense scale**: brute-force cosine with a hard `max_dense_scan` bound; HNSW/IVF indexing is future work (roadmap v0.2). Above ~10⁵–10⁶ chunks the dense channel needs an ANN index — the threshold is documented, not discovered at 2 a.m.
-- **Embeddings**: the default `HashingEmbedder` is lexical (bag-of-words hashing), not semantic; a FastEmbed/ONNX provider behind the same trait is planned. Embedding-model identity is recorded per database; dimension mismatch fails fast with a typed error.
-- **Formats**: PDF/DOCX/OCR extraction is **not** implemented (binary inputs are rejected with a typed error and a pointer to the roadmap). Markdown, plain text, source code, and data files are covered.
-- **Graph**: 1-hop co-occurrence only; no relation typing beyond co-occurrence, no multi-hop traversal, no graph database — by ADR, pending demonstrated demand.
-- **Entity resolution**: suffix-folding + case folding; no embedding-based or human-in-the-loop linking yet.
+- **Dense scale**: brute-force model-filtered cosine with a hard `max_dense_scan` bound; HNSW/IVF indexing is future work (roadmap). Above ~10⁵–10⁶ chunks the dense channel needs an ANN index — the threshold is documented, not discovered at 2 a.m.
+- **Embedding semantics are corpus-relative**: LSA captures the distributional structure of *this* library; it does not transfer external synonyms the way pretrained encoders do. A FastEmbed/ONNX provider behind the same `EmbeddingProvider` trait is planned (ADR-005), not claimed. Embedding-model identity is recorded per chunk; mismatch fails fast with a typed error.
+- **Formats**: DOCX/XLSX/PPTX/EPUB and structural HTML are implemented; PDF sits behind the optional `pdf` cargo feature (disabled by default); OCR is **not** implemented (scanned PDFs error with an actionable message).
+- **Graph**: typed edges + multi-hop BFS inside SQLite; still *deliberately* not a graph database, and graph analytics (community detection, PageRank) are future work.
+- **Entity/claim extraction**: deterministic regexing with conservative multi-stage linking — no NER, no coreference, no NLI; recall is unmeasured against NER baselines.
+- **Bitemporality**: claims carry validity intervals; chunk-level event time vs ingestion time is not yet separated at query time.
 - **Multi-user/namespaces, connectors, plugin system, Python/TS bindings, multimodal, code AST (tree-sitter), knowledge versioning UI**: all registered in `docs/NON_GOALS.md` / roadmap with entry criteria, none claimed.
-- **Benchmark**: self-supervised; a human-labeled golden set is the tracked path to claims about *quality* rather than *correctness of the plumbing*.
+- **Benchmark**: self-supervised bench + a 16-query graded golden set; BEIR-scale external evaluation is the tracked path to claims about *quality* rather than *correctness of the plumbing*.
 
 ---
 
@@ -342,18 +346,18 @@ lkos-system/
 │   ├── engine.rs            # the facade: one type applications need
 │   ├── ingestion/           # extract · normalize · hash (typed errors)
 │   ├── chunking/            # structure-aware chunker (prose + code)
-│   ├── embeddings/          # EmbeddingProvider trait + hashing embedder
-│   ├── retrieval/           # lexical · dense · RRF fusion · boosts · MMR
+│   ├── embeddings/          # EmbeddingProvider trait: LSA (PMI+SVD) · hashing fallback
+│   ├── retrieval/           # lexical · dense · RRF fusion · boosts · rerank · MMR
 │   ├── query/               # intent classification · planner · context assembly
 │   ├── knowledge/           # deterministic entities/keywords/claims extraction
 │   ├── entities/  claims/   # resolution · graph links · contradiction engine
-│   ├── graph/  temporal/    # 1-hop neighborhood view · temporal constraints
+│   ├── graph/  temporal/    # typed edges · multi-hop BFS · centrality · temporal
 │   ├── provenance/          # evidence-trail export
-│   ├── storage/             # SQLite · WAL · migrations v1–v4 · DAO
+│   ├── storage/             # SQLite · WAL · migrations v1–v5 · DAO
 │   ├── jobs/  events/       # background queue · lifecycle event bus
 │   ├── llm/                 # LlmProvider: null · fake · llama.cpp
 │   └── bin/                 # lkos-cli · lkos-bench
-├── tests/                   # engine_tests.rs · unit_quality.rs (42 tests)
+├── tests/                   # engine · unit_quality · semantic · security_hostile · golden_eval (75 tests)
 ├── docs/                    # architecture, retrieval, database, ADRs, security
 ├── benchmarks/results/      # committed benchmark outputs (JSON + text)
 └── .github/workflows/ci.yml # fmt · clippy -D warnings · test · release (3 OS)

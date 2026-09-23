@@ -2,12 +2,16 @@
 
 ## Suite
 
-`cargo test` → 42 tests, all green, fully offline:
+`cargo test` → 75 tests, all green, fully offline:
 
 | Suite | Count | Covers |
 |---|---|---|
 | `tests/engine_tests.rs` | 21 | end-to-end invariants through the public API |
 | `tests/unit_quality.rs` | 19 | deterministic core units + golden retrieval corpus |
+| `tests/semantic_tests.rs` | 9 | LSA training determinism, model lineage, incremental re-embed, semantic e2e |
+| `tests/security_hostile.rs` | 12 | adversarial red-team: oversize/corrupt inputs, FTS injection, idempotency under attack, graph-correct deletion |
+| `tests/golden_eval.rs` | 2 | graded qrels evaluation (Recall/MRR/nDCG) + per-mode ablation floors |
+| module units (in-crate) | 10 | LSA math, Jaro–Winkler, temporal parsing |
 | doc-tests | 2 | README/engine examples compile |
 
 ## End-to-end invariants (property-style, spec §95)
