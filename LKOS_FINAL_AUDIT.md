@@ -25,7 +25,7 @@
 | Atomic job claiming (multi-worker safe) | **Implemented** | immediate-tx conditional UPDATE (`claim_next_atomic`) |
 | Privacy: zero network | **Implemented by construction** | dependency graph contains no HTTP client; no `std::net` usage in engine paths; `grep`-audited |
 | Provenance to source spans | **Implemented** (chunk, entity-mention, claim+sentence-span, summary) | `provenance` table + `HitProvenance` |
-| LLM-optional | **Implemented** | all 75 tests pass with `NullProvider`; refusal contract test |
+| LLM-optional | **Implemented** | all 77 tests pass with `NullProvider`; refusal contract test |
 | Real ANN (HNSW) | **Not implemented** — brute force with documented cap; frontier item | `max_dense_scan` |
 | NER-grade extraction | **Not implemented** — regexes, honestly labeled | `knowledge` module docs |
 | Bitemporal query semantics | **Partially implemented** — claim validity stored, not query-planned | `claims.valid_from/until` |

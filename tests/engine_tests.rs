@@ -557,3 +557,66 @@ fn ingest_file_from_disk() {
     let resp = engine.query(QueryRequest::new("vacation")).expect("query");
     assert!(!resp.hits.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Migration resilience (Windows-CI regression: "duplicate column name")
+// ---------------------------------------------------------------------------
+
+/// A database whose migration batches are fully applied but whose
+/// `user_version` stamp lags (crash between batches, or a build that stamped
+/// the version only once at the end) must reopen cleanly: applied batches are
+/// detected via their signature column and skipped, the stamp catches up, and
+/// the engine is fully usable. Re-running `ALTER TABLE ADD COLUMN` would fail
+/// with "duplicate column name" and leave the library permanently unopenable.
+#[test]
+fn migration_self_heals_when_version_stamp_lags() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let path = dir.path().join("heal.lkos");
+    {
+        let engine = Lkos::open(&path, Config::default()).expect("fresh open");
+        engine
+            .ingest_bytes("doc.md", DOC_A.as_bytes())
+            .expect("ingest");
+        engine.close().expect("close");
+    }
+    // Simulate the stale stamp: all v5 tables exist, but the marker claims v1.
+    {
+        let conn = rusqlite::Connection::open(&path).expect("raw conn");
+        conn.pragma_update(None, "user_version", 1).expect("stamp");
+    }
+    // Reopen must self-heal, not fail with "duplicate column name".
+    {
+        let engine = Lkos::open(&path, Config::default())
+            .expect("reopen with stale version stamp must self-heal");
+        assert_eq!(engine.stats().expect("stats").documents, 1);
+        let resp = engine.query(QueryRequest::new("vacation")).expect("query");
+        assert!(
+            !resp.hits.is_empty(),
+            "recovered library must stay searchable"
+        );
+        engine.close().expect("close");
+    }
+}
+
+/// Scratch engines are private by construction: many can exist in parallel
+/// inside one process without sharing a database file. (Regression: scratch
+/// paths derived from wall-clock timestamps collided on Windows, so parallel
+/// tests migrated the same fresh file concurrently.)
+#[test]
+fn parallel_in_memory_engines_are_isolated() {
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let engine = mem();
+                let name = format!("doc-{i}.md");
+                let body = format!("# Doc {i}\n\nUnique payload {i} for isolation.");
+                engine.ingest_bytes(&name, body.as_bytes()).expect("ingest");
+                assert_eq!(engine.stats().expect("stats").documents, 1);
+                engine.close().expect("close");
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("scratch thread must not panic");
+    }
+}

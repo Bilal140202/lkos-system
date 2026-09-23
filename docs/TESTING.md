@@ -2,11 +2,11 @@
 
 ## Suite
 
-`cargo test` → 75 tests, all green, fully offline:
+`cargo test` → 77 tests, all green, fully offline:
 
 | Suite | Count | Covers |
 |---|---|---|
-| `tests/engine_tests.rs` | 21 | end-to-end invariants through the public API |
+| `tests/engine_tests.rs` | 23 | end-to-end invariants through the public API |
 | `tests/unit_quality.rs` | 19 | deterministic core units + golden retrieval corpus |
 | `tests/semantic_tests.rs` | 9 | LSA training determinism, model lineage, incremental re-embed, semantic e2e |
 | `tests/security_hostile.rs` | 12 | adversarial red-team: oversize/corrupt inputs, FTS injection, idempotency under attack, graph-correct deletion |

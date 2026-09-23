@@ -47,7 +47,7 @@ Maturity ladder (v0.1 = this release). Each version ships only when its
 - [x] Graph 2.0: typed RELATES_TO_*, multi-hop BFS, centrality, graph-correct delete
 - [x] Document intelligence: DOCX/XLSX/PPTX/EPUB, proper HTML, bomb guards, optional PDF feature
 - [x] Jobs: atomic claim, backoff, dead-letter, cancellation, progress, worker count
-- [x] Evaluation: golden qrels + ablation harness + red-team suite (75 tests total)
+- [x] Evaluation: golden qrels + ablation harness + red-team suite (77 tests total)
 
 ## Next (ordered by whitepaper section 8)
 

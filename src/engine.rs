@@ -139,12 +139,18 @@ impl Lkos {
     /// Open with an in-memory-backed scratch database (tests/examples).
     /// The scratch directory is removed on [`Lkos::close`].
     pub fn open_in_memory(config: Config) -> Result<Lkos> {
-        let dir = std::env::temp_dir().join(format!("lkos-mem-{}", std::process::id()));
+        // Uniqueness contract: process id + a process-global monotonically
+        // increasing counter. A wall-clock timestamp alone is NOT unique —
+        // on Windows its effective granularity let two parallel tests obtain
+        // the same scratch path and migrate the same fresh database
+        // concurrently ("duplicate column name"). A counter cannot collide
+        // within a process; the pid separates processes.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("lkos-mem-{}-{}", std::process::id(), seq));
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!(
-            "mem-{}.lkos",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
+        let path = dir.join("mem.lkos");
         let mut engine = Self::open(path, config)?;
         // Shared inner state: patch the scratch dir through Arc::get_mut.
         // (open_in_memory is only used before clones exist.)

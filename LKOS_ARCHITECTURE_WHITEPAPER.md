@@ -1,6 +1,6 @@
 # LKOS: A Local-First Knowledge Intelligence Engine with Corpus-Trained Semantic Retrieval, Typed Evidence, and Provenance-Preserving Incremental Indexing
 
-**LKOS Working Notes — Revision 0.9.0**
+**LKOS Working Notes — Revision 0.9.1**
 Repository: <https://github.com/Bilal140202/lkos-system>
 License: MIT
 
@@ -10,7 +10,7 @@ License: MIT
 
 LKOS (Local Knowledge Object System) is an offline, privacy-first knowledge intelligence engine that transforms raw documents into structured, searchable, relationally connected, versioned knowledge — entirely on-device, with no network access and no required language model. This paper describes the v0.9 architecture and its empirical evaluation. The system couples a canonical SQLite substrate with structure-aware chunking, a **corpus-trained latent-semantic embedding provider** (PPMI weighting + randomized truncated SVD, deterministic by construction), hybrid retrieval via Reciprocal Rank Fusion with a deterministic lexical-overlap reranker, multi-stage entity resolution, an evidence layer with typed conflict taxonomy, typed knowledge-graph construction with graph-correct deletion, and a durable job system with exponential backoff and atomic claiming. Every derived artifact carries provenance to its source span.
 
-We report measurements on commodity hardware: semantic model training at **0.06 s per 2,400 chunks**, re-embedding at **22.9k chunks/s**, hybrid query latency **p50 7.4 ms / p99 8.1 ms** on a 200-document library, and — on a 16-query golden set with graded relevance judgments — **MRR 1.000 and nDCG@10 0.966** for the hybrid stack. We additionally document nine defects found and fixed through adversarial self-audit, including a regex-greediness entity-extraction defect that merged distinct organizations, and a quadratic conflict-materialization pathology that we bound by capping pairwise enumeration. All claims in this paper are backed by executable tests (75 passing) or archived benchmark output; capabilities that remain heuristic are labeled as such.
+We report measurements on commodity hardware: semantic model training at **0.06 s per 2,400 chunks**, re-embedding at **22.9k chunks/s**, hybrid query latency **p50 7.4 ms / p99 8.1 ms** on a 200-document library, and — on a 16-query golden set with graded relevance judgments — **MRR 1.000 and nDCG@10 0.966** for the hybrid stack. We additionally document ten defects found and fixed through adversarial self-audit and the project's own three-OS CI gate, including a regex-greediness entity-extraction defect that merged distinct organizations, and a quadratic conflict-materialization pathology that we bound by capping pairwise enumeration. All claims in this paper are backed by executable tests (77 passing) or archived benchmark output; capabilities that remain heuristic are labeled as such.
 
 ---
 
@@ -35,7 +35,7 @@ This revision (v0.9) makes the following concrete contributions over the v0.1 fo
 7. **A production job system**: atomic claiming, exponential backoff with cap, dead-lettering, cancellation, progress, configurable worker count — five defects fixed relative to v0.1 (§3.8).
 8. **A golden evaluation framework** with graded human-style relevance judgments replacing v0.1's title-echo self-benchmark, plus an adversarial red-team test suite (§4, §5).
 
-We also report the audit process itself: nine defects that survived v0.1's test suite were found by v0.9's adversarial tests and fixed (§6).
+We also report the audit process itself: nine defects that survived v0.1's test suite were found by v0.9's adversarial tests and fixed (§6), and a tenth migration defect was later caught by the three-OS CI gate and fixed with regression tests (§6, defect 10).
 
 ### 1.3 Non-contributions (honesty contract)
 
@@ -135,7 +135,7 @@ v0.1's benchmark generated probe queries that echoed the generating document's t
 
 ### 4.5 Test inventory
 
-75 tests: 21 end-to-end engine invariants, 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial tests, 2 golden-evaluation tests, 10 module unit tests (LSA/JW/temporal), 2 doc tests. All pass in release mode on this machine; CI runs the same suite on Linux/macOS/Windows.
+77 tests: 23 end-to-end engine invariants (incl. 2 migration-resilience regressions), 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial tests, 2 golden-evaluation tests, 10 module unit tests (LSA/JW/temporal), 2 doc tests. All pass in release mode on this machine; CI runs the same suite on Linux/macOS/Windows.
 
 ---
 
@@ -168,13 +168,13 @@ Interpretation, deliberately conservative: on a 16-document corpus with a small 
 
 ### 5.3 What the tests prove
 
-Beyond the evaluation numbers, 75 assertions encode behavioral contracts: idempotent ingestion; changed-content versioning; deleted documents vanish from documents, chunks, mentions, provenance *and* the graph; corrupted-model libraries refuse to open rather than mix embedding spaces; `$10 million` and `$10M` do not conflict; `$10M`/2023 vs `$25M`/2024 is classified cross-period while same-period disagreement is classified as such; backed-off jobs are invisible until release and dead-letter after exhaustion; cancelled jobs never claim; five duplicate ingestions produce one document; the FTS index survives seven injection shapes; the engine answers queries from four threads concurrently with deterministic output.
+Beyond the evaluation numbers, 77 assertions encode behavioral contracts: idempotent ingestion; changed-content versioning; deleted documents vanish from documents, chunks, mentions, provenance *and* the graph; corrupted-model libraries refuse to open rather than mix embedding spaces; `$10 million` and `$10M` do not conflict; `$10M`/2023 vs `$25M`/2024 is classified cross-period while same-period disagreement is classified as such; backed-off jobs are invisible until release and dead-letter after exhaustion; cancelled jobs never claim; five duplicate ingestions produce one document; the FTS index survives seven injection shapes; the engine answers queries from four threads concurrently with deterministic output.
 
 ---
 
 ## 6. Defects Found by the Audit (and Fixed)
 
-The adversarial process found nine defects that v0.1's functional tests had missed:
+The adversarial process found nine defects that v0.1's functional tests had missed; a tenth surfaced afterwards through the repository's own Windows CI gate:
 
 1. **Entity-regex greediness** — "Omega Corp partnered with Tau Corp" extracted as a single organization. Fixed by truncation at the first legal-suffix boundary; regression-tested.
 2. **Regex alternation order** — `[MBKm%]` matched the `m` of "million", so "$10 million" parsed as 10, creating a false 100% conflict with "$10M". Fixed by ordering longer alternatives first.
@@ -185,6 +185,7 @@ The adversarial process found nine defects that v0.1's functional tests had miss
 7. **`worker_threads` dead** — recorded but never used. Now honored.
 8. **Backoff/cancellation absent** — failed jobs requeued immediately and could not be cancelled; deadline-free retry loops were possible. Fixed with `run_at` + dead-letter + cooperative cancellation.
 9. **FTS score discarded** — every lexical hit reported `bm25: 0.0`, making score-based explanation impossible. Fixed (score preserved, higher-is-better normalized).
+10. **Migration stamps were not crash-atomic** (found by the project's own Windows CI runner, post-v0.9). `user_version` was stamped once after *all* batches, and scratch databases were named by wall-clock timestamp — whose effective granularity on Windows let two parallel tests open the same fresh scratch file and migrate it concurrently, failing with `duplicate column name: knowledge_json`. A crash between batches could likewise leave a fully-migrated library with a stale stamp that could never reopen. Fixed in three layers: per-batch version stamps; signature-column self-healing (a batch whose signature column already exists is skipped, recovering stale-stamped databases); and process-unique scratch paths (pid + atomic counter). Regression-tested (`migration_self_heals_when_version_stamp_lags`, `parallel_in_memory_engines_are_isolated`).
 
 ---
 
