@@ -272,6 +272,11 @@ fn bench_quality(engine: &Lkos, args: Args) -> (f64, f64) {
 
 #[allow(clippy::field_reassign_with_default)]
 fn main() {
+    // `ann` subcommand: dense-channel crossover benchmark (v0.10, issue #2).
+    if std::env::args().nth(1).as_deref() == Some("ann") {
+        ann_crossover();
+        return;
+    }
     let args = parse_args();
     println!("LKOS benchmark");
     println!(
@@ -403,4 +408,167 @@ fn main() {
     println!();
     println!("Note: quality numbers are self-supervised (ground truth = generating document).");
     println!("They validate the fusion stack end-to-end; they are not a human benchmark.");
+}
+
+// ---------------------------------------------------------------------------
+// ANN crossover benchmark (v0.10, GitHub issue #2)
+//
+// Dense-channel comparison: brute-force cosine scan vs deterministic HNSW.
+// Corpus: clustered unit-space vectors (topical clusters), dim = 128 (the
+// default LSA latent size). Queries jitter actual cluster centers — the
+// regime the dense channel actually serves. Ground truth = exact scan.
+// Everything is deterministic (fixed seeds, xorshift64*).
+// ---------------------------------------------------------------------------
+
+fn rng_f32(rng: &mut Rng) -> f32 {
+    ((rng.next() >> 11) as f64 / (1u64 << 53) as f64) as f32 * 2.0 - 1.0
+}
+
+fn ann_crossover() {
+    const DIM: usize = 128; // default LSA latent dimensionality
+    const CLUSTERS: usize = 40; // topical clusters
+    const JITTER: f32 = 0.05;
+    const QUERIES: usize = 30;
+    const M: usize = 16;
+    const EF_CONSTRUCTION: usize = 200; // matches the engine default (ADR-010)
+    const EFS: [usize; 3] = [32, 64, 128];
+    const SIZES: [usize; 5] = [1_000, 5_000, 20_000, 50_000, 100_000];
+
+    println!("LKOS ANN crossover benchmark (dense channel: brute vs HNSW)");
+    println!(
+        "  dim={DIM} clusters={CLUSTERS} jitter={JITTER} queries={QUERIES} \
+         M={M} efC={EF_CONSTRUCTION} ef_search={EFS:?}"
+    );
+    println!("  seeded, deterministic; ground truth = exact cosine scan");
+    println!();
+
+    let mut rng = Rng::new(0x0A77_C0DE);
+    let centers: Vec<Vec<f32>> = (0..CLUSTERS)
+        .map(|_| (0..DIM).map(|_| rng_f32(&mut rng)).collect())
+        .collect();
+
+    for &n in &SIZES {
+        let per = n / CLUSTERS;
+        // Clustered corpus + jittered-center queries (the realistic regime).
+        let mut pairs: Vec<(i64, Vec<f32>)> = Vec::with_capacity(n);
+        let mut id = 0i64;
+        for center in &centers {
+            for _ in 0..per {
+                let v: Vec<f32> = center
+                    .iter()
+                    .map(|&x| x + JITTER * rng_f32(&mut rng))
+                    .collect();
+                pairs.push((id, v));
+                id += 1;
+            }
+        }
+        let queries: Vec<Vec<f32>> = (0..QUERIES)
+            .map(|i| {
+                centers[i % CLUSTERS]
+                    .iter()
+                    .map(|&x| x + 0.1 * rng_f32(&mut rng))
+                    .collect()
+            })
+            .collect();
+
+        // --- brute force: latency + ground truth --------------------------
+        let mut brute_us: Vec<f64> = Vec::with_capacity(QUERIES);
+        let mut truth: Vec<Vec<(i64, f32)>> = Vec::with_capacity(QUERIES);
+        for q in &queries {
+            let t0 = Instant::now();
+            let mut s: Vec<(i64, f32)> = pairs
+                .iter()
+                .map(|(cid, v)| (*cid, lkos::embeddings::cosine(q, v)))
+                .filter(|(_, x)| *x > 0.0)
+                .collect();
+            s.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
+            s.truncate(10);
+            brute_us.push(t0.elapsed().as_micros() as f64);
+            truth.push(s);
+        }
+        brute_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = pairs.len();
+
+        // --- HNSW build ----------------------------------------------------
+        let build_t0 = Instant::now();
+        let index = lkos::ann::HnswIndex::build(pairs.clone(), M, EF_CONSTRUCTION);
+        let build_secs = build_t0.elapsed().as_secs_f64();
+        let stats = index.stats();
+
+        // --- HNSW search per ef -------------------------------------------
+        print!(
+            "N = {n:>7} chunks\n  brute p50 {:>9}  p95 {:>9}   (exact)\n  hnsw build {:.2} s  edges {}  mem ~{:.1} MiB\n",
+            fmt_us(percentile(&brute_us, 50.0)),
+            fmt_us(percentile(&brute_us, 95.0)),
+            build_secs,
+            stats.undirected_edges,
+            stats.memory_estimate_bytes as f64 / (1024.0 * 1024.0),
+        );
+
+        let mut ef_rows: Vec<String> = Vec::new();
+        for &ef in &EFS {
+            let mut ann_us: Vec<f64> = Vec::with_capacity(QUERIES);
+            let mut recall_sum = 0.0f64;
+            for (qi, q) in queries.iter().enumerate() {
+                let t0 = Instant::now();
+                let got = index.search(q, 10, ef);
+                ann_us.push(t0.elapsed().as_micros() as f64);
+                let truth_ids: std::collections::HashSet<i64> =
+                    truth[qi].iter().map(|(cid, _)| *cid).collect();
+                let got_ids: std::collections::HashSet<i64> =
+                    got.iter().map(|(cid, _)| *cid).collect();
+                recall_sum += truth_ids.intersection(&got_ids).count() as f64 / 10.0;
+            }
+            ann_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            ef_rows.push(format!(
+                "  ef={ef:>3}: p50 {:>9}  p95 {:>9}  recall@10 {:.3}",
+                fmt_us(percentile(&ann_us, 50.0)),
+                fmt_us(percentile(&ann_us, 95.0)),
+                recall_sum / QUERIES as f64,
+            ));
+        }
+        for row in &ef_rows {
+            println!("{row}");
+        }
+
+        // --- deletion cost: drop 10%, rebuild ------------------------------
+        let survivors: Vec<(i64, Vec<f32>)> = pairs
+            .iter()
+            .filter(|(cid, _)| cid % 10 != 7)
+            .cloned()
+            .collect();
+        let rebuild_t0 = Instant::now();
+        let _rebuilt = lkos::ann::HnswIndex::build(survivors, M, EF_CONSTRUCTION);
+        println!(
+            "  delete 10% + rebuild {:.2} s   (invalidation strategy: full rebuild; ADR-010)",
+            rebuild_t0.elapsed().as_secs_f64()
+        );
+
+        // Amortization: how many queries until the build pays for itself?
+        let brute_p50 = percentile(&brute_us, 50.0);
+        let ann_p50 = percentile(
+            &{
+                // re-derive from ef=64 row: reuse last measured latency list
+                // (kept simple: rerun one batch at ef=64)
+                let mut us = Vec::with_capacity(QUERIES);
+                for q in &queries {
+                    let t0 = Instant::now();
+                    let _ = index.search(q, 10, 64);
+                    us.push(t0.elapsed().as_micros() as f64);
+                }
+                us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                us
+            },
+            50.0,
+        );
+        let saved_us = brute_p50 - ann_p50;
+        if saved_us > 0.0 {
+            let q_break_even = (build_secs * 1_000_000.0 / saved_us).ceil() as u64;
+            println!("  break-even: ~{q_break_even} dense queries after build (at ef=64)");
+        } else {
+            println!("  break-even: ANN slower than brute at this N for ef=64");
+        }
+        println!();
+    }
+    println!("Decision inputs for ADR-010: see docs/adr/ADR.md and docs/RETRIEVAL.md.");
 }

@@ -1,0 +1,50 @@
+LKOS ANN crossover benchmark (dense channel: brute vs HNSW)
+  dim=128 clusters=40 jitter=0.05 queries=30 M=16 efC=200 ef_search=[32, 64, 128]
+  seeded, deterministic; ground truth = exact cosine scan
+
+N =    1000 chunks
+  brute p50    172 us  p95    203 us   (exact)
+  hnsw build 0.14 s  edges 10382  mem ~0.6 MiB
+  ef= 32: p50     26 us  p95     30 us  recall@10 1.000
+  ef= 64: p50     46 us  p95     59 us  recall@10 1.000
+  ef=128: p50     82 us  p95     92 us  recall@10 1.000
+  delete 10% + rebuild 0.12 s   (invalidation strategy: full rebuild; ADR-010)
+  break-even: ~1110 dense queries after build (at ef=64)
+
+N =    5000 chunks
+  brute p50    990 us  p95   1.04 ms   (exact)
+  hnsw build 0.80 s  edges 54075  mem ~2.9 MiB
+  ef= 32: p50     39 us  p95     46 us  recall@10 0.997
+  ef= 64: p50     51 us  p95     66 us  recall@10 1.000
+  ef=128: p50     79 us  p95     94 us  recall@10 1.000
+  delete 10% + rebuild 0.72 s   (invalidation strategy: full rebuild; ADR-010)
+  break-even: ~870 dense queries after build (at ef=64)
+
+N =   20000 chunks
+  brute p50   3.81 ms  p95   4.00 ms   (exact)
+  hnsw build 3.90 s  edges 228629  mem ~11.7 MiB
+  ef= 32: p50     82 us  p95    102 us  recall@10 0.980
+  ef= 64: p50    115 us  p95    138 us  recall@10 0.997
+  ef=128: p50    149 us  p95    178 us  recall@10 1.000
+  delete 10% + rebuild 3.41 s   (invalidation strategy: full rebuild; ADR-010)
+  break-even: ~1074 dense queries after build (at ef=64)
+
+N =   50000 chunks
+  brute p50  10.01 ms  p95  10.68 ms   (exact)
+  hnsw build 15.02 s  edges 592290  mem ~29.5 MiB
+  ef= 32: p50    148 us  p95    167 us  recall@10 0.873
+  ef= 64: p50    197 us  p95    230 us  recall@10 0.960
+  ef=128: p50    294 us  p95    317 us  recall@10 0.993
+  delete 10% + rebuild 12.71 s   (invalidation strategy: full rebuild; ADR-010)
+  break-even: ~1555 dense queries after build (at ef=64)
+
+N =  100000 chunks
+  brute p50  20.24 ms  p95  21.94 ms   (exact)
+  hnsw build 46.36 s  edges 1212941  mem ~59.2 MiB
+  ef= 32: p50    191 us  p95    266 us  recall@10 0.677
+  ef= 64: p50    296 us  p95    345 us  recall@10 0.853
+  ef=128: p50    415 us  p95    475 us  recall@10 0.967
+  delete 10% + rebuild 40.41 s   (invalidation strategy: full rebuild; ADR-010)
+  break-even: ~2345 dense queries after build (at ef=64)
+
+Decision inputs for ADR-010: see docs/adr/ADR.md and docs/RETRIEVAL.md.
