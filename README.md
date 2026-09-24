@@ -1,13 +1,13 @@
 # LKOS: A Local-First, Provenance-Aware Knowledge Engine — Design, Implementation, and Evaluation of an Offline Neuro-Symbolic Retrieval System on a Single SQLite File
 
 **Bilal140202**
-`lkos-system` · v0.9.1 · MIT License
+`lkos-system` · v0.10.0 · MIT License
 
 ---
 
 ## Abstract
 
-Retrieval-Augmented Generation (RAG) systems typically defer all intelligence to query time: documents are chunked and embedded once, and every question pays the full cost of search, assembly, and grounding from scratch. We present **LKOS** (Local Knowledge Object System), a knowledge engine that inverts this division of labor. LKOS front-loads structure into ingestion: every source document is deterministically decomposed into *chunks*, *knowledge objects* (typed entities, keywords, SVO claims), an *entity co-occurrence graph*, and a complete *provenance trail* — all persisted transactionally in a single portable SQLite database. At query time, a deterministic rule-based planner classifies intent and routes a hybrid retrieval stack: sparse BM25 (FTS5, Porter-stemmed) fused with corpus-trained LSA embeddings (deterministic PPMI + randomized SVD, with feature-hashing cold-start fallback) via Reciprocal Rank Fusion (k = 60) plus a deterministic lexical-overlap reranker, boosted by positional authority, exact-phrase, entity, and section-title signals, then diversified with Maximal Marginal Relevance. Every result explains *why* it was retrieved. Contradictory claims are classified through a typed taxonomy (same-period disagreement, cross-period, undated, negation) after unit/magnitude normalization and **preserved as first-class conflicts** rather than silently merged. The engine is 100% local (zero network, zero telemetry), fully useful without any LLM, and integrates optional local models through a provider abstraction (llama.cpp subprocess support included). We describe the architecture, data model, retrieval algorithms, contradiction engine, and query planner; we report measured performance (200 documents / 2,400 chunks: hybrid+rerank p50 = 7.4 ms, dense-LSA p50 = 6.3 ms, lexical p50 = 3.5 ms; LSA training 0.06 s per 2,400 chunks and re-embedding at 22.9k chunks/s; golden-set hybrid MRR = 1.000, nDCG@10 = 0.966; self-supervised Recall@10 = 1.000) on commodity hardware; and we ship 77 automated tests, a three-OS CI pipeline, and an honest ledger of what v0.9 does **not** do (ANN, pretrained encoders, NER-grade extraction, BEIR-scale evaluation). LKOS is released as an embeddable Rust library, a CLI, and a benchmark harness.
+Retrieval-Augmented Generation (RAG) systems typically defer all intelligence to query time: documents are chunked and embedded once, and every question pays the full cost of search, assembly, and grounding from scratch. We present **LKOS** (Local Knowledge Object System), a knowledge engine that inverts this division of labor. LKOS front-loads structure into ingestion: every source document is deterministically decomposed into *chunks*, *knowledge objects* (typed entities, keywords, SVO claims), an *entity co-occurrence graph*, and a complete *provenance trail* — all persisted transactionally in a single portable SQLite database. At query time, a deterministic rule-based planner classifies intent and routes a hybrid retrieval stack: sparse BM25 (FTS5, Porter-stemmed) fused with corpus-trained LSA embeddings (deterministic PPMI + randomized SVD, with feature-hashing cold-start fallback) via Reciprocal Rank Fusion (k = 60) plus a deterministic lexical-overlap reranker, boosted by positional authority, exact-phrase, entity, and section-title signals, then diversified with Maximal Marginal Relevance. Every result explains *why* it was retrieved. Contradictory claims are classified through a typed taxonomy (same-period disagreement, cross-period, undated, negation) after unit/magnitude normalization and **preserved as first-class conflicts** rather than silently merged. The engine is 100% local (zero network, zero telemetry), fully useful without any LLM, and integrates optional local models through a provider abstraction (llama.cpp subprocess support included). We describe the architecture, data model, retrieval algorithms, contradiction engine, and query planner; we report measured performance (200 documents / 2,400 chunks: hybrid+rerank p50 = 7.4 ms, dense-LSA p50 = 6.3 ms, lexical p50 = 3.5 ms; LSA training 0.06 s per 2,400 chunks and re-embedding at 22.9k chunks/s; golden-set hybrid MRR = 1.000, nDCG@10 = 0.966; self-supervised Recall@10 = 1.000) on commodity hardware; and we ship 86 automated tests, a three-OS CI pipeline, and an honest ledger of what v0.10 does **not** do (persisted ANN graphs, pretrained encoders, NER-grade extraction, BEIR-scale evaluation). v0.10 adds a deterministic in-process HNSW index (Malkov & Yashunin) for the dense channel — brute force below a measured crossover, sub-linear ANN above it, and degrade-not-refuse past the old 250k scan cap (ADR-010). LKOS is released as an embeddable Rust library, a CLI, and a benchmark harness.
 
 **Keywords:** local-first software, hybrid retrieval, BM25, reciprocal rank fusion, knowledge objects, entity resolution, claim extraction, contradiction detection, provenance, SQLite, FTS5, query planning, RAG, on-device AI
 
@@ -34,9 +34,9 @@ This repository is a working **v0.9** of that thesis — since v0.1, the dense c
 3. **A deterministic knowledge layer**: typed entity extraction, canonical entity resolution with legal-suffix folding, co-occurrence graph construction, SVO claim extraction, and a numeric **contradiction engine** that preserves disagreement (§6).
 4. **A rule-based query planner** with intent-specific channel weights and a pre-built-summary fast path (§7).
 5. **An LLM-optional integration layer**: `LlmProvider` trait with null/fake/llama.cpp-subprocess providers, grounded prompting, and background summarization that degrades gracefully (§8).
-6. **An engineering discipline**: 77 tests covering end-to-end invariants (idempotent ingestion, delete cascades, backup/restore round-trip, LLM-optional degradation), an adversarial red-team suite, a graded golden-qrels evaluation with per-mode ablations, a reproducible benchmark harness, zero-clippy CI on Linux/macOS/Windows, and an explicit non-goals register (§9–§10).
+6. **An engineering discipline**: 86 tests covering end-to-end invariants (idempotent ingestion, delete cascades, backup/restore round-trip, LLM-optional degradation), an adversarial red-team suite, a graded golden-qrels evaluation with per-mode ablations, an ANN recall/exactness/invalidation suite, a reproducible benchmark harness, zero-clippy CI on Linux/macOS/Windows, and an explicit non-goals register (§9–§10).
 
-Everything documented in this paper corresponds to executable, tested code in this repository. Where a capability is *not* implemented (e.g., HNSW indexing, PDF extraction), we say so explicitly (§10) — the repository's own audit standard demands that documentation never outrun implementation.
+Everything documented in this paper corresponds to executable, tested code in this repository. Where a capability is *not* implemented (e.g., persisted ANN graphs, PDF extraction), we say so explicitly (§10) — the repository's own audit standard demands that documentation never outrun implementation.
 
 ---
 
@@ -158,7 +158,7 @@ With `synchronous_ingestion = false`, ingestion enqueues `process_document` jobs
 Given a query, the executor runs up to three channels and fuses:
 
 - **Sparse / lexical**: FTS5 `MATCH` over `chunks_fts` (Porter stemming, unicode61). User queries are sanitized into quoted prefix tokens joined with `AND` (`fts_escape`) — injection-safe by construction, exact terms and identifiers surface through this channel.
-- **Dense**: a **corpus-trained LSA provider** (`lsa-pmi-svd-v1`: PPMI weighting + randomized truncated SVD, deterministic by construction, persisted in `lsa_terms`) with a feature-hashing cold-start fallback (`hashing-lex-v1`, below `semantic_min_chunks`). Each chunk records the model that produced its vector; query-time dense search is a **single-pass, model-filtered** cosine scan bounded by `max_dense_scan` (250k) — an honest, documented O(N) choice for local-library scale (HNSW is registered as future work, not claimed).
+- **Dense**: a **corpus-trained LSA provider** (`lsa-pmi-svd-v1`: PPMI weighting + randomized truncated SVD, deterministic by construction, persisted in `lsa_terms`) with a feature-hashing cold-start fallback (`hashing-lex-v1`, below `semantic_min_chunks`). Each chunk records the model that produced its vector. Dense search runs two paths (v0.10, ADR-010): an exact model-filtered scan below `ann_min_chunks` (20k) and under filters, and a **deterministic in-process HNSW index** (M=16, efC=200, ef=64) above the crossover — `auto` mode degrades to ANN past `max_dense_scan` (250k) instead of refusing.
 - **Entity**: for entity-lookup plans, the entity index contributes chunks mentioning matched entities.
 
 ### 5.2 Fusion and ranking
@@ -279,7 +279,7 @@ Grounded answering (`ask`) composes planner → retrieval → context assembly �
 
 The project standard is that **every documented capability maps to code + test + docs** — and symmetrically, every missing capability is registered:
 
-- **Dense scale**: brute-force model-filtered cosine with a hard `max_dense_scan` bound; HNSW/IVF indexing is future work (roadmap). Above ~10⁵–10⁶ chunks the dense channel needs an ANN index — the threshold is documented, not discovered at 2 a.m.
+- **Dense scale**: solved for in-process workloads in v0.10 — deterministic HNSW above the measured crossover with degrade-not-refuse past the scan cap (ADR-010, crossover benchmark archived). Still registered: *persisted* ANN graphs (rebuild-after-mutation amortizes today; a serialized index is future work) and IVF/graph-variant comparisons.
 - **Embedding semantics are corpus-relative**: LSA captures the distributional structure of *this* library; it does not transfer external synonyms the way pretrained encoders do. A FastEmbed/ONNX provider behind the same `EmbeddingProvider` trait is planned (ADR-005), not claimed. Embedding-model identity is recorded per chunk; mismatch fails fast with a typed error.
 - **Formats**: DOCX/XLSX/PPTX/EPUB and structural HTML are implemented; PDF sits behind the optional `pdf` cargo feature (disabled by default); OCR is **not** implemented (scanned PDFs error with an actionable message).
 - **Graph**: typed edges + multi-hop BFS inside SQLite; still *deliberately* not a graph database, and graph analytics (community detection, PageRank) are future work.
@@ -297,7 +297,8 @@ The maturity ladder follows the repository audit (v0.9 = *this release*, semanti
 | Version | Theme | Items |
 |---|---|---|
 | **0.1** | Core engine | SQLite substrate, hybrid RRF retrieval, entities/graph/claims/conflicts, provenance, planner, jobs/events, CLI, bench, 42 tests, CI |
-| **0.9 (this release)** | Semantic engine | LSA embeddings + model migration, reranking, BM25 score preservation, conflict taxonomy + unit normalization, multi-stage entity resolution + merge APIs, typed graph + graph-correct delete, DOCX/XLSX/PPTX/EPUB + bomb guards, production jobs, golden-qrels evaluation + red-team suite, 77 tests |
+| **0.9** | Semantic engine | LSA embeddings + model migration, reranking, BM25 score preservation, conflict taxonomy + unit normalization, multi-stage entity resolution + merge APIs, typed graph + graph-correct delete, DOCX/XLSX/PPTX/EPUB + bomb guards, production jobs, golden-qrels evaluation + red-team suite, 77 tests |
+| **0.10 (this release)** | Dense-channel scale | deterministic in-process HNSW (M=16/efC=200), exact cache-fingerprint invalidation, `ann_mode` policy (auto/brute/hnsw), degrade-not-refuse past `max_dense_scan`, crossover benchmark + ADR-010, ANN test suite (86 tests) |
 | 0.2 | Retrieval depth | ANN (HNSW) behind `EmbeddingProvider`/index abstraction, FastEmbed provider, MMR tuning suite, retrieval golden-set expansion |
 | 0.3 | Knowledge depth | embedding-assisted entity linking, relationship typing, hierarchical summaries (RAPTOR-style), PDF/DOCX extractors |
 | 0.4 | Incremental engine | per-chunk reuse on re-index (chunk-hash invalidation), watcher-driven re-ingestion, embeddings versioning |
@@ -344,6 +345,7 @@ for hit in &resp.hits {
 lkos-system/
 ├── src/
 │   ├── engine.rs            # the facade: one type applications need
+│   ├── ann.rs               # deterministic HNSW dense index (v0.10, ADR-010)
 │   ├── ingestion/           # extract · normalize · hash (typed errors)
 │   ├── chunking/            # structure-aware chunker (prose + code)
 │   ├── embeddings/          # EmbeddingProvider trait: LSA (PMI+SVD) · hashing fallback
@@ -357,7 +359,7 @@ lkos-system/
 │   ├── jobs/  events/       # background queue · lifecycle event bus
 │   ├── llm/                 # LlmProvider: null · fake · llama.cpp
 │   └── bin/                 # lkos-cli · lkos-bench
-├── tests/                   # engine · unit_quality · semantic · security_hostile · golden_eval (77 tests)
+├── tests/                   # engine · unit_quality · semantic · security_hostile · golden_eval · ann (86 tests)
 ├── docs/                    # architecture, retrieval, database, ADRs, security
 ├── benchmarks/results/      # committed benchmark outputs (JSON + text)
 └── .github/workflows/ci.yml # fmt · clippy -D warnings · test · release (3 OS)

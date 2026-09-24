@@ -49,10 +49,26 @@ Maturity ladder (v0.1 = this release). Each version ships only when its
 - [x] Jobs: atomic claim, backoff, dead-letter, cancellation, progress, worker count
 - [x] Evaluation: golden qrels + ablation harness + red-team suite (77 tests total)
 
+## v0.10 — Dense-channel scale (shipped)
+
+- [x] Deterministic in-process HNSW (`src/ann.rs`): no RNG (splitmix64 layer
+      assignment + hash-order insertion), cosine distance, positive-similarity
+      parity with the brute-force channel
+- [x] Exact cache invalidation via the (model, COUNT, MAX(id)) fingerprint
+      (valid because vectors are immutable within a model name)
+- [x] `ann_mode` policy: auto (default; crossover 20k) / brute (v0.9 contract) /
+      hnsw (always); degrade-not-refuse past `max_dense_scan`
+- [x] ANN crossover benchmark (`lkos-bench ann`) archived under
+      `benchmarks/results/ann-crossover-v0.10.0.txt`; decision recorded in ADR-010
+- [x] Two scale defects found and fixed: result-heap Ord inversion;
+      insertion-order recall saturation on cluster-sequential corpora
+- [x] ANN test suite: exactness vs brute force, invalidation, policy paths,
+      filtered bypass (86 tests total)
+
 ## Next (ordered by whitepaper section 8)
 
 1. BEIR-scale external evaluation
-2. HNSW/IVF ANN with measured crossover
+2. Persisted/serialized ANN graphs; IVF comparison at extreme N; streaming inserts
 3. Pretrained local encoders via EmbeddingProvider (ONNX/fastembed)
 4. Cross-encoder reranking behind the ablation harness
 5. NER-grade extraction on a labeled slice

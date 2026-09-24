@@ -9,10 +9,30 @@ and each token becomes a quoted prefix term (`"vacation"*`), joined with `AND`.
 Operator characters, parentheses, and quotes from user input can therefore never
 alter query structure — injection-safe by construction.
 
-**Dense.** `HashingEmbedder` (256-dim, L2-normalized): tokens hash into buckets
-with signed updates, term frequency weighted sublinearly. Cosine similarity is
-computed brute-force over stored BLOBs, bounded by `Config::max_dense_scan`
-(250,000 chunks). The bound fails loudly rather than silently degrading.
+**Dense.** The dense channel embeds the query with the active provider
+(`HashingEmbedder` 256-dim, or corpus-trained LSA) and compares cosine
+similarity against stored BLOBs. Two execution paths (v0.10, ADR-010):
+
+- **Brute force** (exact): single model-filtered scan; used below
+  `Config::ann_min_chunks` (20,000 chunks), under any active filter, or when
+  `ann_mode = "brute"`. The `max_dense_scan` cap (250,000) still fails loudly
+  in `brute` mode.
+- **ANN** (approximate): a deterministic pure-Rust HNSW graph
+  (`lkos::ann::HnswIndex`, M=16, efC=200, `ann_ef_search`=64) built once per
+  embedding model and cached on the engine. The cache fingerprint
+  `(model, COUNT, MAX(chunk id))` is *exact* because chunk vectors are
+  immutable within a model name (written at insert or at model-change
+  migration only) — inserts/deletes/migrations always move one counter.
+  Invalidation triggers a full rebuild on the next dense query (measured
+  ≈ 1 build; see `benchmarks/results/ann-crossover-v0.10.0.txt`).
+  Determinism: no RNG anywhere — layer assignment is a splitmix64 function
+  of the chunk id, insertion order is a hash shuffle, every tie-breaks by
+  (distance, id). `auto` mode (default) uses ANN at/above the crossover and
+  **degrades to ANN past `max_dense_scan` instead of refusing**; filtered
+  queries always brute-force the filtered set. Measured at 100k chunks
+  (128-d, clustered): brute p50 20.24 ms vs ANN p50 0.30 ms @ recall@10
+  0.853 (ef=64) / 0.42 ms @ 0.967 (ef=128); the default ef=64 holds
+  recall@10 ≥ 0.95 through 50k chunks.
 
 **Entity.** Entity-lookup plans scan `entity_mentions` for matched entities and
 inject chunks with rank-based RRF contributions (weight 0.8).

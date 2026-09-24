@@ -2,7 +2,7 @@
 
 ## Suite
 
-`cargo test` → 77 tests, all green, fully offline:
+`cargo test` → 86 tests, all green, fully offline:
 
 | Suite | Count | Covers |
 |---|---|---|
@@ -11,7 +11,8 @@
 | `tests/semantic_tests.rs` | 9 | LSA training determinism, model lineage, incremental re-embed, semantic e2e |
 | `tests/security_hostile.rs` | 12 | adversarial red-team: oversize/corrupt inputs, FTS injection, idempotency under attack, graph-correct deletion |
 | `tests/golden_eval.rs` | 2 | graded qrels evaluation (Recall/MRR/nDCG) + per-mode ablation floors |
-| module units (in-crate) | 10 | LSA math, Jaro–Winkler, temporal parsing |
+| `tests/ann_tests.rs` | 5 | HNSW exactness (ef ≥ N == brute force), cache invalidation on delete/insert, auto degrade-past-cap, brute cap enforcement, filtered-query bypass |
+| module units (in-crate) | 14 | LSA math, Jaro–Winkler, temporal parsing, HNSW determinism/recall/edges |
 | doc-tests | 2 | README/engine examples compile |
 
 ## End-to-end invariants (property-style, spec §95)

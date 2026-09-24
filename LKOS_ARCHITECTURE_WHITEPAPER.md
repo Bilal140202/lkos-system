@@ -1,6 +1,6 @@
 # LKOS: A Local-First Knowledge Intelligence Engine with Corpus-Trained Semantic Retrieval, Typed Evidence, and Provenance-Preserving Incremental Indexing
 
-**LKOS Working Notes — Revision 0.9.1**
+**LKOS Working Notes — Revision 0.10.0**
 Repository: <https://github.com/Bilal140202/lkos-system>
 License: MIT
 
@@ -8,9 +8,9 @@ License: MIT
 
 ## Abstract
 
-LKOS (Local Knowledge Object System) is an offline, privacy-first knowledge intelligence engine that transforms raw documents into structured, searchable, relationally connected, versioned knowledge — entirely on-device, with no network access and no required language model. This paper describes the v0.9 architecture and its empirical evaluation. The system couples a canonical SQLite substrate with structure-aware chunking, a **corpus-trained latent-semantic embedding provider** (PPMI weighting + randomized truncated SVD, deterministic by construction), hybrid retrieval via Reciprocal Rank Fusion with a deterministic lexical-overlap reranker, multi-stage entity resolution, an evidence layer with typed conflict taxonomy, typed knowledge-graph construction with graph-correct deletion, and a durable job system with exponential backoff and atomic claiming. Every derived artifact carries provenance to its source span.
+LKOS (Local Knowledge Object System) is an offline, privacy-first knowledge intelligence engine that transforms raw documents into structured, searchable, relationally connected, versioned knowledge — entirely on-device, with no network access and no required language model. This paper describes the v0.10 architecture and its empirical evaluation. The system couples a canonical SQLite substrate with structure-aware chunking, a **corpus-trained latent-semantic embedding provider** (PPMI weighting + randomized truncated SVD, deterministic by construction), hybrid retrieval via Reciprocal Rank Fusion with a deterministic lexical-overlap reranker, multi-stage entity resolution, an evidence layer with typed conflict taxonomy, typed knowledge-graph construction with graph-correct deletion, and a durable job system with exponential backoff and atomic claiming. Every derived artifact carries provenance to its source span.
 
-We report measurements on commodity hardware: semantic model training at **0.06 s per 2,400 chunks**, re-embedding at **22.9k chunks/s**, hybrid query latency **p50 7.4 ms / p99 8.1 ms** on a 200-document library, and — on a 16-query golden set with graded relevance judgments — **MRR 1.000 and nDCG@10 0.966** for the hybrid stack. We additionally document ten defects found and fixed through adversarial self-audit and the project's own three-OS CI gate, including a regex-greediness entity-extraction defect that merged distinct organizations, and a quadratic conflict-materialization pathology that we bound by capping pairwise enumeration. All claims in this paper are backed by executable tests (77 passing) or archived benchmark output; capabilities that remain heuristic are labeled as such.
+We report measurements on commodity hardware: semantic model training at **0.06 s per 2,400 chunks**, re-embedding at **22.9k chunks/s**, hybrid query latency **p50 7.4 ms / p99 8.1 ms** on a 200-document library, and — on a 16-query golden set with graded relevance judgments — **MRR 1.000 and nDCG@10 0.966** for the hybrid stack. v0.10 adds a **deterministic in-process HNSW index** (Malkov & Yashunin) for the dense channel: on a 100,000-chunk clustered corpus (128-d) it reduces dense p50 from 20.24 ms (exact scan) to **0.42 ms at measured recall@10 0.967** (ef=128; 0.30 ms at 0.853 with ef=64), with an exact fingerprint-based cache invalidation and a degrade-not-refuse policy past the former scan cap (ADR-010). We additionally document twelve defects found and fixed through adversarial self-audit and the project's own three-OS CI gate, including a regex-greediness entity-extraction defect that merged distinct organizations, a quadratic conflict-materialization pathology that we bound by capping pairwise enumeration, and — new in v0.10 — two HNSW construction defects (a heap-ordering inversion and insertion-order-induced recall saturation) that only surfaced because the benchmark measured recall against exact ground truth. All claims in this paper are backed by executable tests (86 passing) or archived benchmark output; capabilities that remain heuristic are labeled as such.
 
 ---
 
@@ -39,7 +39,7 @@ We also report the audit process itself: nine defects that survived v0.1's test 
 
 ### 1.3 Non-contributions (honesty contract)
 
-The following are **not** claimed: neural-network embedding quality (LSA is corpus-relative semantics, not paraphrase transfer; §7.1 states this precisely); production ANN scale (brute-force scan with a documented cap remains the dense path; §7.3); NER-grade entity extraction (deterministic regexes with conservative linking; §7.2); OCR; multilingual extraction. Section 7 enumerates limitations with the same precision as Section 5 enumerates results, per the project's no-false-completion rule.
+The following are **not** claimed: neural-network embedding quality (LSA is corpus-relative semantics, not paraphrase transfer; §7.1 states this precisely); ANN persistence (the v0.10 dense path is brute force below a measured crossover and a deterministic in-process HNSW above it; §7.3); NER-grade entity extraction (deterministic regexes with conservative linking; §7.2); OCR; multilingual extraction. Section 7 enumerates limitations with the same precision as Section 5 enumerates results, per the project's no-false-completion rule.
 
 ---
 
@@ -131,11 +131,11 @@ v0.1's benchmark generated probe queries that echoed the generating document's t
 
 ### 4.4 System benchmark
 
-`lkos-bench` measures ingestion throughput, per-mode query latency (p50/p95/p99), self-supervised retrieval sanity, semantic training and re-embedding throughput, and library statistics. Archived output: `benchmarks/results/v0.9.0-run1.txt`.
+`lkos-bench` measures ingestion throughput, per-mode query latency (p50/p95/p99), self-supervised retrieval sanity, semantic training and re-embedding throughput, the ANN dense-channel crossover (brute vs HNSW build/latency/recall/deletion across corpus sizes), and library statistics. Archived output: `benchmarks/results/v0.9.0-run1.txt`, `benchmarks/results/ann-crossover-v0.10.0.txt`.
 
 ### 4.5 Test inventory
 
-77 tests: 23 end-to-end engine invariants (incl. 2 migration-resilience regressions), 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial tests, 2 golden-evaluation tests, 10 module unit tests (LSA/JW/temporal), 2 doc tests. All pass in release mode on this machine; CI runs the same suite on Linux/macOS/Windows.
+86 tests: 23 end-to-end engine invariants (incl. 2 migration-resilience regressions), 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial tests, 2 golden-evaluation tests, 5 ANN integration tests (exactness, invalidation, policy paths), 14 module unit tests (LSA/JW/temporal/HNSW), 2 doc tests. All pass in release mode on this machine; CI runs the same suite on Linux/macOS/Windows.
 
 ---
 
@@ -170,6 +170,21 @@ Interpretation, deliberately conservative: on a 16-document corpus with a small 
 
 Beyond the evaluation numbers, 77 assertions encode behavioral contracts: idempotent ingestion; changed-content versioning; deleted documents vanish from documents, chunks, mentions, provenance *and* the graph; corrupted-model libraries refuse to open rather than mix embedding spaces; `$10 million` and `$10M` do not conflict; `$10M`/2023 vs `$25M`/2024 is classified cross-period while same-period disagreement is classified as such; backed-off jobs are invisible until release and dead-letter after exhaustion; cancelled jobs never claim; five duplicate ingestions produce one document; the FTS index survives seven injection shapes; the engine answers queries from four threads concurrently with deterministic output.
 
+### 5.4 ANN crossover (v0.10, `benchmarks/results/ann-crossover-v0.10.0.txt`)
+
+Dense-channel comparison on a clustered 128-d corpus (40 topics, jitter 0.05; queries jitter actual cluster centers — the regime the dense channel serves). M=16, efC=200; ground truth is the exact scan; all values deterministic.
+
+| N | brute p50 | ANN p50 (ef=64) | recall@10 (ef=64) | ANN p50 (ef=128) | recall@10 (ef=128) | build | del-10% rebuild |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 0.17 ms | 0.046 ms | 1.000 | 0.082 ms | 1.000 | 0.14 s | 0.12 s |
+| 5,000 | 0.99 ms | 0.051 ms | 1.000 | 0.079 ms | 1.000 | 0.80 s | 0.72 s |
+| 20,000 | 3.81 ms | 0.115 ms | 0.997 | 0.149 ms | 1.000 | 3.9 s | 3.4 s |
+| 50,000 | 10.01 ms | 0.197 ms | 0.960 | 0.294 ms | 0.993 | 15.0 s | 12.7 s |
+| 100,000 | 20.24 ms | 0.296 ms | 0.853 | 0.415 ms | 0.967 | 46.4 s | 40.4 s |
+
+Reading, deliberately conservative: the ANN path buys 34–87× dense p50 at this scale but is *approximate* — the default `ann_ef_search=64` holds recall@10 ≥ 0.95 through ~50k chunks on this corpus, and ef=128 through ~50k at ≥ 0.99 with 0.967 at 100k. Break-even (build amortized against per-query savings) sits at ~1.1k–2.3k dense queries, which is why `auto` keeps the exact scan below `ann_min_chunks = 20,000` and why the engine caches the index across queries. Deletion is quantified as full-rebuild cost (≈ 0.87× one build) — the fingerprint makes the rebuild *correct*; a serialized incremental graph is registered future work, not claimed.
+
+Two defects surfaced only because the harness measured recall against exact ground truth; both are recorded in §6 (items 11–12) with their fixes.
 ---
 
 ## 6. Defects Found by the Audit (and Fixed)
@@ -187,13 +202,16 @@ The adversarial process found nine defects that v0.1's functional tests had miss
 9. **FTS score discarded** — every lexical hit reported `bm25: 0.0`, making score-based explanation impossible. Fixed (score preserved, higher-is-better normalized).
 10. **Migration stamps were not crash-atomic** (found by the project's own Windows CI runner, post-v0.9). `user_version` was stamped once after *all* batches, and scratch databases were named by wall-clock timestamp — whose effective granularity on Windows let two parallel tests open the same fresh scratch file and migrate it concurrently, failing with `duplicate column name: knowledge_json`. A crash between batches could likewise leave a fully-migrated library with a stale stamp that could never reopen. Fixed in three layers: per-batch version stamps; signature-column self-healing (a batch whose signature column already exists is skipped, recovering stale-stamped databases); and process-unique scratch paths (pid + atomic counter). Regression-tested (`migration_self_heals_when_version_stamp_lags`, `parallel_in_memory_engines_are_isolated`).
 
+11. **HNSW result-heap ordering was inverted** (found by the v0.10 crossover harness, pre-release). The kept-results heap used a reversed `Ord`, so its overflow `pop()` evicted the *best* candidate and the stop/accept gates compared against the best instead of the worst — measured recall@10 collapsed to 0.54 on a 2,000-node clustered corpus. Fixed by defining `Ord` forward on the kept-results entry (`peek()` = worst kept, `pop()` = evict worst) and reversed on the frontier entry (`pop()` = nearest); the heap contract is now documented on the types and locked by the exactness test (`ef ≥ N` must reproduce the brute-force ranking).
+12. **Ascending-id insertion starved cross-cluster bridges** (found by the same harness at scale). Inserting nodes in id order on a cluster-sequential corpus built isolated per-cluster subgraphs; recall *saturated* independent of `ef` (0.937 at ef ≥ 256 on a 100k probe) — the signature of unreachable nodes, not insufficient search width. Fixed with a deterministic hash-order insertion shuffle (splitmix64 of the chunk id), which interleaves clusters from the first inserts; recall now scales smoothly with ef (0.987 @ ef=128, 1.000 @ ef=512 on the probe corpus).
+
 ---
 
 ## 7. Limitations (Precise)
 
 1. **Embedding semantics are corpus-relative.** LSA captures the distributional structure of *this* library. It will not transfer external synonyms ("car" ↔ "automobile" converge only if the corpus evidences it). Paraphrase transfer requires a pretrained encoder (ONNX/fastembed slot, ADR-005) — not implemented, not claimed.
 2. **Entity/claim extraction is deterministic regexing.** No NER, no coreference, no NLI. Precision is conservative by design (type-guarded linking, threshold 0.93); recall is unmeasured against NER baselines — future work (§8).
-3. **Dense search is brute force.** The documented `max_dense_scan` cap (250k) rejects rather than degrades. ANN (HNSW) is the next frontier (§8) and must be benchmarked against crossover before adoption (source-triangulation rule).
+3. **Dense search is approximate above the crossover.** v0.10 replaces the v0.9 refuse-past-cap behaviour with a deterministic HNSW path (ADR-010): exact scan below `ann_min_chunks` (20k) and under filters; ANN above. Approximate results are bounded by measurement (recall@10 ≥ 0.95 at ef=64 on the crossover corpus up to 50k chunks; see §5.4), not by guarantee. *Persisted* ANN graphs (serializing the index beside SQLite) remain future work — rebuild-after-mutation is the amortized v0.10 strategy.
 4. **`open_in_memory` is a scratch file**, not `:memory:` — cleaned on `close()`, but not memory-resident.
 5. **Golden set is small.** 16 queries guard regressions; they do not establish ranking superiority over any external baseline. BEIR-style evaluation is future work.
 6. **HTML extraction is structural, not reader-mode.** Boilerplate (nav, ads) is not classified; templates are preserved as text.
@@ -205,7 +223,7 @@ The adversarial process found nine defects that v0.1's functional tests had miss
 ## 8. Research Frontier (Ordered by Expected Value)
 
 1. **BEIR-style external evaluation** — measure hybrid/rerank ablations on a public retrieval benchmark (licensing permitting) to replace small-corpus floors with population-grade numbers.
-2. **HNSW/IVF ANN** with measured recall/latency/build/update crossover against the brute-force path, including deletion behavior.
+2. ~~**HNSW/IVF ANN** with measured recall/latency/build/update crossover against the brute-force path, including deletion behavior.~~ **Delivered in v0.10** for the in-process case (ADR-010 + `benchmarks/results/ann-crossover-v0.10.0.txt`). Remaining: persisted/serialized graphs, IVF comparison at extreme N, streaming insertion between rebuilds.
 3. **Pretrained local encoders** via the existing `EmbeddingProvider` trait (ONNX Runtime, fastembed models), with the same model-lineage migration machinery LSA already exercises.
 4. **Cross-encoder reranking** behind the same evidence-gated ablation harness (adopt only if the golden/BEIR deltas justify the latency).
 5. **NER-grade extraction** (small local models) replacing regex entity/claim extraction, evaluated on a labeled slice of the golden corpus.
