@@ -290,6 +290,18 @@ pub struct Filters {
     pub as_of: Option<String>,
 }
 
+impl Filters {
+    /// True when no restriction is active, so an unfiltered dense index
+    /// (e.g. the ANN cache) may serve the query directly.
+    pub fn is_effectively_empty(&self) -> bool {
+        self.document_ids.is_none()
+            && self.doc_types.is_none()
+            && self.must_contain.is_none()
+            && self.entities.is_none()
+            && self.as_of.is_none()
+    }
+}
+
 /// A structured query request (the "power mode" API).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {

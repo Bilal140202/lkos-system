@@ -31,12 +31,14 @@
 //! - A deterministic lexical-overlap reranker re-scores the fused top-N
 //!   before MMR; ablations in docs/EVALUATION.md quantify its effect.
 
+use crate::ann::HnswIndex;
 use crate::embeddings::{cosine, EmbeddingProvider};
 use crate::error::{LkosError, Result};
 use crate::storage::dao::{self, HitRow};
 use crate::types::*;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Sanitize a query for FTS5 MATCH: quote each token with prefix matching,
 /// join with AND. Deterministic and injection-safe (tokens are alphanumeric).
@@ -153,8 +155,34 @@ pub fn lexical_search(
     Ok(out)
 }
 
+/// Shared dense-channel output contract: positive cosine only, sorted
+/// similarity-desc with chunk-id tie-break, ranked `top_n`. Both the
+/// brute-force scan and the ANN index funnel through this so fusion sees
+/// one identical shape.
+fn rank_dense(mut scored: Vec<(i64, f32)>, top_n: usize) -> Vec<(i64, usize, f32)> {
+    scored.retain(|(_, s)| *s > 0.0);
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    scored
+        .into_iter()
+        .take(top_n)
+        .enumerate()
+        .map(|(i, (id, s))| (id, i + 1, s))
+        .collect()
+}
+
 /// Dense (cosine) search restricted to chunks embedded by the provider's
-/// model. Single-pass blob scan (v0.1 issued one SELECT per chunk).
+/// model. Two execution paths (v0.10):
+///
+/// - **ANN** — when an `ann_index` for this model is supplied and the query
+///   carries no effective filter, search the deterministic HNSW graph
+///   (sublinear; required past `max_dense_scan`).
+/// - **Brute force** — single-pass blob scan (v0.1 issued one SELECT per
+///   chunk). Exact; still used below the crossover and under filters.
+#[allow(clippy::too_many_arguments)]
 pub fn vector_search(
     conn: &Connection,
     provider: &dyn EmbeddingProvider,
@@ -162,33 +190,31 @@ pub fn vector_search(
     top_n: usize,
     filters: Option<&Filters>,
     max_scan: usize,
+    ann_index: Option<(&Arc<HnswIndex>, usize)>,
 ) -> Result<Vec<(i64, usize, f32)>> {
+    let unfiltered = filters.map_or(true, Filters::is_effectively_empty);
+    if let Some((index, ef)) = ann_index {
+        if unfiltered && !index.is_empty() {
+            let qv = provider.embed(query)?;
+            return Ok(rank_dense(index.search(&qv, top_n, ef), top_n));
+        }
+    }
+
     let qv = provider.embed(query)?;
     let corpus = dao::all_embeddings(conn, filters, &provider.name())?;
     if corpus.len() > max_scan {
         return Err(LkosError::Other(format!(
             "dense scan would cover {} chunks (cap {max_scan}); \
-             reduce the library, use filters, or shard the index",
+             reduce the library, use filters, set ann_mode to \"auto\"/\"hnsw\", \
+             or shard the index",
             corpus.len()
         )));
     }
-    let mut scored: Vec<(i64, f32)> = corpus
+    let scored: Vec<(i64, f32)> = corpus
         .into_iter()
         .map(|(id, v)| (id, cosine(&qv, &v)))
-        .filter(|(_, s)| *s > 0.0)
         .collect();
-    // Deterministic order: score desc, then chunk id asc (tie-break).
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    Ok(scored
-        .into_iter()
-        .take(top_n)
-        .enumerate()
-        .map(|(i, (id, s))| (id, i + 1, s))
-        .collect())
+    Ok(rank_dense(scored, top_n))
 }
 
 /// Core hybrid search. Returns fused+reranked+boosted+MMR-diversified hits.
@@ -205,6 +231,7 @@ pub fn hybrid_search(
     w_fts: f32,
     mmr_lambda: f32,
     max_scan: usize,
+    ann_index: Option<(&Arc<HnswIndex>, usize)>,
     known_entities: &[(String, i64)],
     enable_reranking: bool,
     rerank_top_n: usize,
@@ -215,13 +242,13 @@ pub fn hybrid_search(
     let (vec_res, fts_res) = match mode {
         RetrievalMode::LexicalOnly => (Vec::new(), lexical_search(conn, query, top_n, filters)?),
         RetrievalMode::VectorOnly => (
-            vector_search(conn, provider, query, top_n, filters, max_scan)?,
+            vector_search(conn, provider, query, top_n, filters, max_scan, ann_index)?,
             Vec::new(),
         ),
         RetrievalMode::EntityLookup => (Vec::new(), Vec::new()),
         // Hybrid and Auto both run both channels (planner picks mode upstream).
         _ => {
-            let v = vector_search(conn, provider, query, top_n, filters, max_scan)?;
+            let v = vector_search(conn, provider, query, top_n, filters, max_scan, ann_index)?;
             let f = lexical_search(conn, query, top_n, filters)?;
             (v, f)
         }

@@ -25,9 +25,22 @@ pub struct Config {
     pub weight_fts: f32,
     /// MMR trade-off: 1.0 = pure relevance, 0.0 = pure diversity.
     pub mmr_lambda: f32,
-    /// Maximum chunks scanned by brute-force dense search before refusing
-    /// (documented threshold; HNSW is on the roadmap).
+    /// Maximum chunks scanned by brute-force dense search before degrading
+    /// to the ANN index (v0.10) — `auto`/`hnsw` modes switch to HNSW past
+    /// this size instead of refusing. In `brute` mode the cap still errors.
     pub max_dense_scan: usize,
+    /// Dense-channel ANN policy: `"auto"` (brute force below `ann_min_chunks`,
+    /// HNSW above), `"brute"` (always brute force, cap enforced), or `"hnsw"`
+    /// (always HNSW when the corpus is non-empty). Default `auto`.
+    #[serde(default = "default_ann_mode")]
+    pub ann_mode: String,
+    /// Beam width for HNSW layer-0 search (higher = better recall, slower).
+    #[serde(default = "default_ann_ef_search")]
+    pub ann_ef_search: usize,
+    /// Corpus size at which `auto` mode starts using the HNSW index
+    /// (measured crossover: see benchmarks/results/ann-crossover-*.txt).
+    #[serde(default = "default_ann_min_chunks")]
+    pub ann_min_chunks: usize,
     /// Number of background worker threads.
     #[serde(default = "default_worker_threads")]
     pub worker_threads: usize,
@@ -93,6 +106,9 @@ impl Default for Config {
             weight_fts: 0.5,
             mmr_lambda: 0.7,
             max_dense_scan: 250_000,
+            ann_mode: "auto".into(),
+            ann_ef_search: 64,
+            ann_min_chunks: 20_000,
             worker_threads: 1,
             summary_temperature: 0.2,
             summary_max_tokens: 256,
@@ -116,6 +132,15 @@ impl Default for Config {
 
 fn default_true() -> bool {
     true
+}
+fn default_ann_mode() -> String {
+    "auto".into()
+}
+fn default_ann_ef_search() -> usize {
+    64
+}
+fn default_ann_min_chunks() -> usize {
+    20_000
 }
 fn default_embedding_provider() -> String {
     "lsa".into()

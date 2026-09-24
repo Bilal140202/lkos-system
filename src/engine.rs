@@ -12,6 +12,7 @@
 //! # }
 //! ```
 
+use crate::ann::{AnnCacheEntry, HnswIndex};
 use crate::chunking;
 use crate::config::Config;
 use crate::embeddings::{EmbeddingProvider, HashingEmbedder, LsaEmbedder};
@@ -44,6 +45,10 @@ struct Inner {
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     /// Directory to remove on close (in-memory scratch), if any.
     scratch_dir: Option<std::path::PathBuf>,
+    /// Cached deterministic HNSW index over the current embedding model's
+    /// chunks (v0.10; see `ann` module docs and ADR-010). Rebuilt lazily
+    /// when the (model, COUNT, MAX(id)) fingerprint changes.
+    ann: Mutex<Option<AnnCacheEntry>>,
 }
 
 impl std::fmt::Debug for Lkos {
@@ -128,6 +133,7 @@ impl Lkos {
                 workers: Mutex::new(Vec::new()),
                 shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 scratch_dir: None,
+                ann: Mutex::new(None),
             }),
         };
         if !engine.inner.config.synchronous_ingestion {
@@ -475,6 +481,70 @@ impl Lkos {
     // querying
     // ------------------------------------------------------------------
 
+    /// Resolve the dense-channel ANN option for a query.
+    ///
+    /// Returns `Some((index, ef_search))` when the configured `ann_mode`
+    /// policy wants the HNSW path for the current corpus state, else `None`
+    /// (brute force). The cache is validated against the
+    /// `(model, COUNT, MAX(chunk id))` fingerprint — exact because chunk
+    /// vectors are immutable within a model name (written at insert or at
+    /// model-change migration only; see the `ann` module docs and ADR-010).
+    fn resolve_ann_index(
+        &self,
+        conn: &rusqlite::Connection,
+        unfiltered: bool,
+        dense_used: bool,
+    ) -> Result<Option<(Arc<HnswIndex>, usize)>> {
+        let cfg = &self.inner.config;
+        if !dense_used || !unfiltered {
+            return Ok(None);
+        }
+        let mode = cfg.ann_mode.trim().to_lowercase();
+        if mode == "brute" {
+            return Ok(None);
+        }
+        let model = self.inner.embedder.name().into_owned();
+        let (count, max_id): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM chunks \
+             WHERE embedding_model = ?1 AND embedding IS NOT NULL",
+            rusqlite::params![model],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if count == 0 {
+            return Ok(None);
+        }
+        // `auto`: use ANN at the measured crossover, or degrade-instead-of-
+        // refuse past the brute-force cap. `hnsw`: always.
+        let wants_ann = mode == "hnsw"
+            || count >= cfg.ann_min_chunks as i64
+            || count > cfg.max_dense_scan as i64;
+        if !wants_ann {
+            return Ok(None);
+        }
+
+        let mut cache = self.inner.ann.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = cache.as_ref() {
+            if entry.model == model && entry.count == count && entry.max_id == max_id {
+                return Ok(Some((entry.index.clone(), cfg.ann_ef_search)));
+            }
+        }
+        // Build (or rebuild after invalidation). The fetch + build happen
+        // under the cache lock: rebuild cost is amortized across queries and
+        // documented in benchmarks/results/ann-crossover-*.txt (ADR-010).
+        let corpus = dao::all_embeddings(conn, None, &model)?;
+        // M=16, ef_construction=200: measured on the v0.10 crossover bench
+        // (recall@10 >= 0.99 at ef_search=128 on 100k clustered chunks;
+        // see benchmarks/results/ann-crossover-*.txt and ADR-010).
+        let index = Arc::new(HnswIndex::build(corpus, 16, 200));
+        *cache = Some(AnnCacheEntry {
+            model,
+            count,
+            max_id,
+            index: index.clone(),
+        });
+        Ok(Some((index, cfg.ann_ef_search)))
+    }
+
     /// Full query path: plan → retrieve → assemble → explain.
     #[allow(clippy::too_many_lines)]
     pub fn query(&self, req: QueryRequest) -> Result<QueryResponse> {
@@ -534,6 +604,14 @@ impl Lkos {
             }
         }
 
+        let dense_used = matches!(
+            plan.mode,
+            RetrievalMode::Auto | RetrievalMode::Hybrid | RetrievalMode::VectorOnly
+        );
+        let ann =
+            self.resolve_ann_index(store.read(), req.filters.is_effectively_empty(), dense_used)?;
+        let ann_ref = ann.as_ref().map(|(idx, ef)| (idx, *ef));
+
         let mut hits = crate::retrieval::hybrid_search(
             store.read(),
             self.inner.embedder.as_ref(),
@@ -546,6 +624,7 @@ impl Lkos {
             plan.w_fts,
             cfg.mmr_lambda,
             cfg.max_dense_scan,
+            ann_ref,
             &known_entities,
             cfg.enable_reranking,
             cfg.rerank_top_n,

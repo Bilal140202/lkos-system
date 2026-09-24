@@ -1,6 +1,6 @@
 [package]
 name = "lkos"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 rust-version = "1.75"
 description = "LKOS — Local Knowledge Object System: an offline, privacy-first hybrid retrieval and knowledge engine (SQLite + FTS5 + semantic embeddings + RRF + entity resolution + claims + provenance)"
