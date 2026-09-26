@@ -1,0 +1,131 @@
+% ─────────────────────────────────────────────────────────
+% §7 Limitations, §8 Research Frontier, §9 Conclusion, References
+% ─────────────────────────────────────────────────────────
+
+\needspace{0.2\textheight}
+\section{Limitations (Precise)}\label{sec:limitations}
+
+\begin{enumerate}[itemsep=3pt]
+\item \textbf{Embedding semantics are corpus-relative.}
+LSA captures the distributional structure of \emph{this} library. It will not
+transfer external synonyms (``car'' $\leftrightarrow$ ``automobile'' converge
+only if the corpus evidences it). Paraphrase transfer requires a pretrained
+encoder (ONNX/fastembed slot, ADR-005) --- not implemented, not claimed.
+\item \textbf{Entity/claim extraction is deterministic regexing.}
+No NER, no coreference, no NLI. Precision is conservative by design
+(type-guarded linking, threshold 0.93); recall is unmeasured against NER
+baselines --- future work (Section~\ref{sec:frontier}).
+\item \textbf{Dense search is approximate above the crossover.}
+v0.10 replaces the v0.9 refuse-past-cap behaviour with a deterministic HNSW
+path \cite{malkov2018} (ADR-010): exact scan below \texttt{ann\_min\_chunks}
+(20k) and under filters; ANN above. Approximate results are bounded by
+measurement (recall@10 $\geq 0.95$ at ef=64 on the crossover corpus up to 50k
+chunks; see Section~\ref{sec:ann}), not by guarantee. \emph{Persisted} ANN
+graphs (serializing the index beside SQLite) remain future work ---
+rebuild-after-mutation is the amortized v0.10 strategy.
+\item \textbf{\texttt{open\_in\_memory} is a scratch file}, not
+\texttt{:memory:} --- cleaned on \texttt{close()}, but not memory-resident.
+\item \textbf{Golden set is small.}
+16 queries guard regressions; they do not establish ranking superiority over
+any external baseline. BEIR-style evaluation is future work.
+\item \textbf{HTML extraction is structural, not reader-mode.} Boilerplate
+(nav, ads) is not classified; templates are preserved as text.
+\item \textbf{No OCR.} Scanned PDFs error with an actionable message.
+\item \textbf{Bitemporality is partial.} Claims carry validity intervals;
+chunk-level event time vs ingestion time is not yet separated at query time.
+\end{enumerate}
+
+\needspace{0.2\textheight}
+\section{Research Frontier (Ordered by Expected Value)}\label{sec:frontier}
+
+\begin{enumerate}[itemsep=3pt]
+\item \textbf{BEIR-style external evaluation} --- measure hybrid/rerank
+ablations on a public retrieval benchmark (licensing permitting) to replace
+small-corpus floors with population-grade numbers.
+\item \textbf{HNSW/IVF ANN} with measured recall/latency/build/update
+crossover against the brute-force path, including deletion behavior. ---
+\textbf{Delivered in v0.10} for the in-process case (ADR-010 +
+\texttt{benchmarks/results/ann-crossover-v0.10.0.txt}). Remaining:
+persisted/serialized graphs, IVF comparison at extreme N, streaming insertion
+between rebuilds.
+\item \textbf{Pretrained local encoders} via the existing
+\texttt{EmbeddingProvider} trait (ONNX Runtime, fastembed models), with the
+same model-lineage migration machinery LSA already exercises.
+\item \textbf{Cross-encoder reranking} behind the same evidence-gated
+ablation harness (adopt only if the golden/BEIR deltas justify the latency).
+\item \textbf{NER-grade extraction} (small local models) replacing regex
+entity/claim extraction, evaluated on a labeled slice of the golden corpus.
+\item \textbf{Bitemporal query semantics} over claim validity intervals
+(``what was true in 2023?'' answered structurally).
+\end{enumerate}
+
+\needspace{0.2\textheight}
+\section{Conclusion}\label{sec:conclusion}
+
+LKOS v0.9 demonstrates that a local-first knowledge engine can have real
+semantic retrieval, a typed evidence layer, and graph-correct incremental
+maintenance without a network, a GPU, or a bundled model --- and that its
+quality claims can be made falsifiable: every architectural statement in this
+paper corresponds to either a passing test, an archived measurement, or an
+explicitly labeled limitation. The repository's own history is the strongest
+evidence of the method: the adversarial audit converted nine silent defects
+into nine regression tests. The finish line remains unchanged --- LKOS must be
+infrastructure that other software can embed, query, update, observe, and
+build upon --- and v0.9 moves it from ``specification ahead of
+implementation'' to ``implementation that documents itself against
+measurement''.
+
+\begin{thebibliography}{11}
+
+\bibitem{deerwester1990}
+S.~Deerwester, S.~Dumais, G.~Furnas, T.~Landauer, and R.~Harshman,
+``Indexing by latent semantic analysis,'' \emph{Journal of the American
+Society for Information Science}, vol.~41, no.~6, 1990.
+
+\bibitem{halko2011}
+N.~Halko, P.-G.~Martinsson, and J.~Tropp, ``Finding structure with
+randomness: Probabilistic algorithms for constructing approximate matrix
+decompositions,'' \emph{SIAM Review}, vol.~53, no.~2, 2011.
+
+\bibitem{robertson2009}
+S.~Robertson and H.~Zaragoza, ``The probabilistic relevance framework: BM25
+and beyond,'' \emph{Foundations and Trends in Information Retrieval},
+vol.~3, no.~4, 2009.
+
+\bibitem{cormack2009}
+G.~Cormack, C.~Clarke, and S.~Buettcher, ``Reciprocal rank fusion outperforms
+Condorcet and individual rank learning methods,'' in \emph{Proc.\ SIGIR},
+2009.
+
+\bibitem{carbonell1998}
+J.~Carbonell and J.~Goldstein, ``The use of MMR, diversity-based reranking
+for reordering documents and producing summaries,'' in \emph{Proc.\ SIGIR},
+1998.
+
+\bibitem{weinberger2009}
+K.~Weinberger et~al., ``Feature hashing for large scale multitask learning,''
+in \emph{Proc.\ ICML}, 2009.
+
+\bibitem{winkler1989}
+W.~Winkler, ``String comparator metrics and enhanced decision rules in the
+Fellegi--Sunter model of record linkage,'' in \emph{ASA Survey Research
+Methods}, 1989.
+
+\bibitem{kleppmann2017}
+M.~Kleppmann, \emph{Designing Data-Intensive Applications}. O'Reilly, 2017.
+
+\bibitem{lewis2020}
+P.~Lewis et~al., ``Retrieval-augmented generation for knowledge-intensive NLP
+tasks,'' in \emph{Proc.\ NeurIPS}, 2020.
+
+\bibitem{karpukhin2020}
+V.~Karpukhin et~al., ``Dense passage retrieval for open-domain question
+answering,'' in \emph{Proc.\ EMNLP}, 2020.
+
+\bibitem{malkov2018}
+Y.~Malkov and D.~Yashunin, ``Efficient and robust approximate nearest
+neighbor search using Hierarchical Navigable Small World graphs,''
+\emph{IEEE Transactions on Pattern Analysis and Machine Intelligence},
+vol.~42, no.~4, pp.~824--836, 2018.
+
+\end{thebibliography}

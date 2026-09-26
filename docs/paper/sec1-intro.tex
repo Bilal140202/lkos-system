@@ -1,0 +1,186 @@
+% ─────────────────────────────────────────────────────────
+% Front matter (compact title block, not \maketitle), Abstract, §1, §2
+% ─────────────────────────────────────────────────────────
+
+\begin{center}
+  {\LARGE\bfseries LKOS: A Local-First Knowledge Intelligence Engine with
+  Corpus-Trained Semantic Retrieval, Typed Evidence, and
+  Provenance-Preserving Incremental Indexing\par}
+  \vspace{1.0em}
+  {\normalsize LKOS Working Notes --- Revision 0.10.0\par}
+  \vspace{0.4em}
+  {\small Repository: \url{https://github.com/Bilal140202/lkos-system}
+  \,\textperiodcentered\, License: MIT\par}
+\end{center}
+
+\vspace{0.6em}
+
+\begin{abstract}
+\noindent
+LKOS (Local Knowledge Object System) is an offline, privacy-first knowledge
+intelligence engine that transforms raw documents into structured, searchable,
+relationally connected, versioned knowledge --- entirely on-device, with no
+network access and no required language model. This paper describes the v0.10
+architecture and its empirical evaluation. The system couples a canonical
+SQLite substrate with structure-aware chunking, a \textbf{corpus-trained
+latent-semantic embedding provider} (PPMI weighting + randomized truncated
+SVD, deterministic by construction), hybrid retrieval via Reciprocal Rank
+Fusion with a deterministic lexical-overlap reranker, multi-stage entity
+resolution, an evidence layer with typed conflict taxonomy, typed
+knowledge-graph construction with graph-correct deletion, and a durable job
+system with exponential backoff and atomic claiming. Every derived artifact
+carries provenance to its source span.
+
+We report measurements on commodity hardware: semantic model training at
+\textbf{0.06\,s per 2,400 chunks}, re-embedding at \textbf{22.9k chunks/s},
+hybrid query latency \textbf{p50 7.4\,ms / p99 8.1\,ms} on a 200-document
+library, and --- on a 16-query golden set with graded relevance judgments ---
+\textbf{MRR 1.000 and nDCG@10 0.966} for the hybrid stack. v0.10 adds a
+\textbf{deterministic in-process HNSW index} (Malkov \& Yashunin) for the
+dense channel: on a 100,000-chunk clustered corpus (128-d) it reduces dense
+p50 from 20.24\,ms (exact scan) to \textbf{0.42\,ms at measured recall@10
+0.967} (ef=128; 0.30\,ms at 0.853 with ef=64), with an exact fingerprint-based
+cache invalidation and a degrade-not-refuse policy past the former scan cap
+(ADR-010). We additionally document twelve defects found and fixed through
+adversarial self-audit and the project's own three-OS CI gate, including a
+regex-greediness entity-extraction defect that merged distinct organizations,
+a quadratic conflict-materialization pathology that we bound by capping
+pairwise enumeration, and --- new in v0.10 --- two HNSW construction defects
+(a heap-ordering inversion and insertion-order-induced recall saturation) that
+only surfaced because the benchmark measured recall against exact ground
+truth. All claims in this paper are backed by executable tests (86 passing) or
+archived benchmark output; capabilities that remain heuristic are labeled as
+such.
+\end{abstract}
+
+\needspace{0.2\textheight}
+\section{Introduction}\label{sec:intro}
+
+\subsection{Motivation}\label{sec:motivation}
+
+Runtime Retrieval-Augmented Generation (RAG) systems
+\cite{lewis2020} answer queries by retrieving chunks and delegating synthesis
+to a language model at query time. This design has three properties that are
+undesirable for local-first software: intelligence is deferred to the
+highest-latency, least-deterministic component; the system is useless without
+the model; and knowledge exists only as an undifferentiated pile of text
+spans.
+
+LKOS inverts the pipeline. Intelligence is front-loaded into ingestion:
+documents become \textbf{knowledge objects} --- chunks with section structure,
+entities, claims with temporal validity, relationships with provenance ---
+before any query arrives. A language model, when present, consumes LKOS
+evidence; it never defines LKOS. The engine must remain useful with no model
+at all (Section~\ref{sec:tests} satisfies this contractually).
+
+\subsection{Contributions}\label{sec:contributions}
+
+This revision (v0.9) makes the following concrete contributions over the v0.1
+foundation:
+
+\begin{enumerate}[itemsep=2pt]
+\item \textbf{A real semantic dense channel.} v0.1's ``dense'' retrieval was
+signed feature hashing --- lexical, not semantic. We implement a corpus-trained
+LSA provider \cite{deerwester1990,halko2011} that is deterministic, local, and
+dependency-free, with honest cold-start fallback and per-chunk model lineage
+that makes model migration incremental and verifiable
+(Sections~\ref{sec:embeddings} and~\ref{sec:migration}).
+\item \textbf{Retrieval-engine corrections with measured effect.} BM25 scores
+preserved in explanations (v0.1 discarded them), single-pass model-filtered
+dense scan (v0.1: N+1 blob queries), deterministic entity channel (v0.1:
+HashMap iteration order), full-window MMR (v0.1: silent degradation past
+$k+16$), and a deterministic lexical-overlap reranker
+(Sections~\ref{sec:retrieval} and~\ref{sec:goldenresults}).
+\item \textbf{A typed evidence layer.} Conflict taxonomy (same-period
+disagreement / cross-period / undated / negation), negation detection,
+unit-magnitude normalization (\texttt{\$10 million} $\equiv$ \texttt{10M}
+$\equiv$ 10\,000\,000), sentence-character-offset provenance on claims, and an
+indexed conflict check replacing v0.1's $O(N^2)$ scan
+(Section~\ref{sec:claims}).
+\item \textbf{Multi-stage entity resolution} with a type-guarded
+Jaro--Winkler linking stage \cite{winkler1989}, public alias-management and
+merge APIs, and an audit log --- v0.1 documented an alias API that did not
+exist (Section~\ref{sec:entities}).
+\item \textbf{Graph-correct deletion.} v0.1 left stale co-occurrence edges
+forever; v0.9 recomputes the affected subgraph from surviving evidence
+(Section~\ref{sec:entities}).
+\item \textbf{Document intelligence.} DOCX/XLSX/PPTX/EPUB extraction with
+decompression-bomb and entry-count caps, correct HTML handling (script/style
+removal, entity decoding~--- v0.1 kept \texttt{<script>} bodies), and optional
+PDF extraction behind a cargo feature (Section~\ref{sec:documents}).
+\item \textbf{A production job system}: atomic claiming, exponential backoff
+with cap, dead-lettering, cancellation, progress, configurable worker count ---
+five defects fixed relative to v0.1 (Section~\ref{sec:jobs}).
+\item \textbf{A golden evaluation framework} with graded human-style relevance
+judgments replacing v0.1's title-echo self-benchmark, plus an adversarial
+red-team test suite (Sections~\ref{sec:methodology} and~\ref{sec:results}).
+\end{enumerate}
+
+We also report the audit process itself: nine defects that survived v0.1's
+test suite were found by v0.9's adversarial tests and fixed
+(Section~\ref{sec:defects}), and a tenth migration defect was later caught by
+the three-OS CI gate and fixed with regression tests
+(Section~\ref{sec:defects}, defect~10).
+
+\subsection{Non-contributions (honesty contract)}\label{sec:noncontributions}
+
+The following are \textbf{not} claimed: neural-network embedding quality (LSA
+is corpus-relative semantics, not paraphrase transfer;
+Section~\ref{sec:limitations}.1 states this precisely); ANN persistence (the
+v0.10 dense path is brute force below a measured crossover and a deterministic
+in-process HNSW \cite{malkov2018} above it; Section~\ref{sec:limitations}.3);
+NER-grade entity extraction (deterministic regexes with conservative linking;
+Section~\ref{sec:limitations}.2); OCR; multilingual extraction.
+Section~\ref{sec:limitations} enumerates limitations with the same precision
+as Section~\ref{sec:results} enumerates results, per the project's
+no-false-completion rule.
+
+\needspace{0.2\textheight}
+\section{Background and Related Work}\label{sec:background}
+
+\paragraph{Hybrid retrieval and fusion.}
+BM25's term-frequency saturation and length normalization remain the
+strongest cheap lexical baseline \cite{robertson2009}. Reciprocal Rank Fusion
+combines ranked lists without score calibration and is robust when channel
+scores are incomparable \cite{cormack2009}, who report $k=60$. LKOS uses RRF
+with $k=60$ as the default and preserves raw per-channel scores for
+explainability.
+
+\paragraph{Latent-semantic retrieval.}
+Latent Semantic Analysis projects a term--document matrix (typically tf-idf
+weighted) into a low-rank latent space, capturing co-occurrence-based topic
+structure \cite{deerwester1990}. Randomized truncated SVD computes the
+factorization in $O(\mathit{nnz}\cdot l\cdot q)$ with $q$ power iterations
+\cite{halko2011}. LSA is corpus-relative: it captures \emph{distributional}
+semantics of the indexed library --- synonyms and topical proximity
+co-present in the corpus converge --- but it cannot transfer knowledge from
+external corpora the way pretrained transformer encoders do
+\cite{karpukhin2020} (Section~\ref{sec:limitations}.1). For a local-first
+engine that must not download model weights, this is the defensible
+trade-off; the \texttt{EmbeddingProvider} trait leaves the ONNX/fastembed
+slot open (ADR-005).
+
+\paragraph{Diversity.}
+Maximal Marginal Relevance re-ranks candidates by relevance minus similarity
+to already-selected results \cite{carbonell1998}. LKOS applies MMR with
+$\lambda=0.7$ over chunk embeddings.
+
+\paragraph{Entity resolution.}
+Canonicalization + alias tables are the standard first stages;
+Jaro--Winkler \cite{winkler1989} with a strict threshold (0.93 here) provides
+conservative fuzzy linking. Type-guarding and first-letter blocking bound
+false-merge risk --- false merges poison a graph, so recall of the linker is
+deliberately sacrificed.
+
+\paragraph{Contradiction detection.}
+Full NLI-based contradiction detection requires models LKOS does not require.
+We implement the deterministic subset with explicit scope: numeric
+disagreement after unit normalization, classified by temporal overlap, plus
+lexical negation. Disagreement is preserved with provenance, never silently
+resolved (Section~\ref{sec:claims}).
+
+\paragraph{Local-first architecture.}
+SQLite in WAL mode provides crash-safe single-file storage with concurrent
+readers \cite{kleppmann2017}. LKOS adds FTS5 external-content indexes
+synchronized by triggers so the lexical index cannot drift from the canonical
+table.
