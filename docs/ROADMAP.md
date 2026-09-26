@@ -1,6 +1,6 @@
 # ROADMAP.md
 
-Maturity ladder (v0.1 = this release). Each version ships only when its
+Maturity ladder (historical; current release = v0.10.0). Each version ships only when its
 "done" test — code + test + docs + measured benchmark — is met.
 
 ## v0.2 — Retrieval depth
@@ -34,7 +34,7 @@ Maturity ladder (v0.1 = this release). Each version ships only when its
 
 ---
 
-## v0.9 delivered (this release)
+## v0.9 delivered
 
 - [x] Real semantic embeddings: LSA (PPMI + randomized SVD), deterministic,
       corpus-trained; hashing fallback; per-chunk model lineage
@@ -47,7 +47,7 @@ Maturity ladder (v0.1 = this release). Each version ships only when its
 - [x] Graph 2.0: typed RELATES_TO_*, multi-hop BFS, centrality, graph-correct delete
 - [x] Document intelligence: DOCX/XLSX/PPTX/EPUB, proper HTML, bomb guards, optional PDF feature
 - [x] Jobs: atomic claim, backoff, dead-letter, cancellation, progress, worker count
-- [x] Evaluation: golden qrels + ablation harness + red-team suite (77 tests total)
+- [x] Evaluation: golden qrels + ablation harness + red-team suite; 86 tests total as of v0.10)
 
 ## v0.10 — Dense-channel scale (shipped)
 

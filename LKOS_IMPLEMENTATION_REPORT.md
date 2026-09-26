@@ -1,4 +1,8 @@
-# LKOS Implementation Report — v0.9.0
+# LKOS Implementation Report — v0.9.0 (historical; superseded by v0.10.0)
+
+> v0.10.0 delta (SECOND ASCENT sync note): deterministic in-process HNSW dense channel
+> (`src/ann.rs`, ADR-010), ANN crossover benchmark, ANN test suite; suite now **86 tests**
+> (docs/TESTING.md). The tables below are the v0.9 record and are kept verbatim.
 
 ## What was built, in deltas over v0.1
 
@@ -19,7 +23,7 @@
 | Jobs | SELECT-then-UPDATE race, instant retry, no dead-letter | atomic claim, exponential backoff + run_at, dead-letter, cancellation, progress, worker_threads honored |
 | Schema | v4 | v5 (model lineage, claim offsets, conflict kind + indexes, job scheduling, merge audit, downgrade guard) |
 | Evaluation | title-echo self-benchmark (Recall 1.000 meaningless), claims 0 | graded golden qrels + ablation harness + honest floors; bench exercises claims/conflicts/LSA |
-| Tests | 42 | 75 (incl. adversarial red-team suite) |
+| Tests | 42 | 75 (incl. adversarial red-team suite); **86 at v0.10** |
 
 ## Verified numbers (this machine, release build)
 
@@ -27,7 +31,7 @@
 - Query p50: lexical 3.47 ms, dense 6.28 ms, hybrid+rerank 7.43 ms (p99 8.12 ms)
 - Evidence layer on 200-doc bench: 4,800 claims, 9,548 conflicts, 2,384 entities, 10,658 edges
 - Golden set (16 queries): hybrid MRR 1.000, nDCG@10 0.966, Recall@10 1.000; lexical MRR 0.938
-- Tests: 75/75; clippy: 0 warnings
+- Tests: 75/75 (v0.9); **86/86 at v0.10**; clippy: 0 warnings
 
 ## What was removed / replaced
 

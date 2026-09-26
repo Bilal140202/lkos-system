@@ -1,4 +1,4 @@
-# LKOS Competitive Analysis (v0.9)
+# LKOS Competitive Analysis (v0.9; 2.0 rewrite tracked as issue #19)
 
 Honest positioning against the systems a user would actually compare.
 

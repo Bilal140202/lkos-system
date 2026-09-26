@@ -27,7 +27,7 @@ The user-experience target is unchanged from that specification: **ask any quest
 
 ### 1.2 Contributions
 
-This repository is a working **v0.9** of that thesis — since v0.1, the dense channel is a **corpus-trained LSA semantic embedder** (deterministic PPMI + randomized SVD, hashing fallback for cold start), retrieval adds a deterministic reranker with preserved BM25 scores and model-filtered single-pass dense scans, the evidence layer gains a **conflict taxonomy** (same-period / cross-period / undated / negation) with unit normalization, entity resolution gains multi-stage fuzzy linking with public alias/merge APIs, the graph becomes typed and graph-correct under deletion, ingestion covers DOCX/XLSX/PPTX/EPUB with decompression-bomb guards, and the job system is production-shaped (atomic claim, exponential backoff, dead-letter, cancellation). The evidence layer is fully exercised by the benchmark (4,800 claims / 9,548 conflicts on 200 docs) and the evaluation is now a **graded golden-qrels suite with ablations** (hybrid MRR 1.000, nDCG@10 0.966 on the 16-query golden set; lexical 0.938 / 0.873). Concretely:
+This repository is a working **v0.10** of that thesis — v0.10 adds the deterministic in-process HNSW dense channel (ADR-010) — since v0.1, the dense channel is a **corpus-trained LSA semantic embedder** (deterministic PPMI + randomized SVD, hashing fallback for cold start), retrieval adds a deterministic reranker with preserved BM25 scores and model-filtered single-pass dense scans, the evidence layer gains a **conflict taxonomy** (same-period / cross-period / undated / negation) with unit normalization, entity resolution gains multi-stage fuzzy linking with public alias/merge APIs, the graph becomes typed and graph-correct under deletion, ingestion covers DOCX/XLSX/PPTX/EPUB with decompression-bomb guards, and the job system is production-shaped (atomic claim, exponential backoff, dead-letter, cancellation). The evidence layer is fully exercised by the benchmark (4,800 claims / 9,548 conflicts on 200 docs) and the evaluation is now a **graded golden-qrels suite with ablations** (hybrid MRR 1.000, nDCG@10 0.966 on the 16-query golden set; lexical 0.938 / 0.873). Concretely:
 
 1. **A canonical knowledge data model** (documents → chunks → knowledge objects → entities/claims/relationships → provenance) implemented transactionally in SQLite v1–v4 migrations (§4).
 2. **A hybrid, explainable retrieval stack**: FTS5 BM25 + dense feature-hashed vectors, fused with Reciprocal Rank Fusion, boosted by deterministic signals, diversified by MMR, with per-hit `matched_by` explanations (§5).
@@ -268,7 +268,7 @@ Grounded answering (`ask`) composes planner → retrieval → context assembly �
 
 ### 9.3 Verification
 
-- **77 automated tests** (23 end-to-end engine invariants incl. 2 migration-resilience regressions, 19 unit-quality incl. the golden-retrieval corpus, 9 semantic-layer, 12 adversarial red-team, 2 golden-qrels evaluation, 10 module units for LSA/Jaro–Winkler/temporal, 2 doc-tests): all green.
+- **86 automated tests** (23 end-to-end engine invariants incl. 2 migration-resilience regressions, 19 unit-quality incl. the golden-retrieval corpus, 9 semantic-layer, 12 adversarial red-team, 5 ANN integration, 2 golden-qrels evaluation, 14 module units for LSA/Jaro–Winkler/temporal/ANN, 2 doc-tests): all green.
 - **Zero clippy warnings** under `-D warnings`; `cargo fmt` enforced.
 - **CI**: Linux + macOS + Windows matrices running fmt, clippy, tests, release build (`.github/workflows/ci.yml`).
 - Property-style invariants pinned by tests: idempotent ingestion; changed-content versioning; delete-cascades (chunks, mentions, provenance, claim conflicts via FK); backup/restore round-trip searchable; restart preservation; LLM-optional degradation; structural refusal without evidence; empty-input rejection without panic.
@@ -292,7 +292,7 @@ The project standard is that **every documented capability maps to code + test +
 
 ## 11. Roadmap
 
-The maturity ladder follows the repository audit (v0.9 = *this release*, semantic engine, tested & benchmarked):
+The maturity ladder follows the repository audits (historical; the current release is 0.10, dense-channel scale):
 
 | Version | Theme | Items |
 |---|---|---|
