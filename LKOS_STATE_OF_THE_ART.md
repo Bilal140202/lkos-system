@@ -1,4 +1,4 @@
-# LKOS State of the Art — Synthesis (v0.9)
+# LKOS State of the Art — Synthesis (v0.9; ANN row synced for v0.10)
 
 Scope: what the field knows about building local retrieval/knowledge engines,
 what LKOS adopts, modifies, or rejects, and why. Triangulation rule: no
@@ -48,6 +48,8 @@ implementation reality + LKOS measurement (or explicitly marked future work).
 
 ## Frontier (ordered)
 
-BEIR-scale evaluation > HNSW with measured crossover > pretrained local
-encoders > cross-encoder reranking > NER-grade extraction > bitemporal
+BEIR-scale evaluation > ANN persistence & incrementality (v0.10 shipped
+in-memory deterministic HNSW with measured crossover — see Adopted; snapshotting,
+tombstone deletes, and real-vector sweeps remain open, issue #9) > pretrained
+local encoders > cross-encoder reranking > NER-grade extraction > bitemporal
 planning. Rationale and gating in whitepaper section 8.

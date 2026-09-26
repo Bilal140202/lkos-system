@@ -1,6 +1,7 @@
-# LKOS Research Atlas (v0.9)
+# LKOS Research Atlas (v0.9; v0.10 addition: Malkov & Yashunin)
 
 Per-source records for the works that materially shaped v0.9 decisions.
+(Full 2.0 rewrite with per-paper reading notes tracked as issue #19.)
 (YouTube/lecture sources were consulted conceptually; only citable,
 verifiable references are listed — nothing invented.)
 
@@ -16,6 +17,7 @@ verifiable references are listed — nothing invented.)
 | Kleppmann, DDIA | 2017 | durable queues, WAL, recovery | Adopt | jobs backoff/dead-letter; SQLite WAL |
 | Lewis et al., RAG (NeurIPS) | 2020 | runtime retrieval + LLM | Modify | invert: front-load knowledge; LLM optional consumer |
 | Karpukhin et al., DPR (EMNLP) | 2020 | dense retrieval strengths | Reject-for-now | needs pretrained encoder; frontier item |
+| Malkov & Yashunin, HNSW (TPAMI) | 2016 | layered small-world ANN graphs | **Adopt (v0.10)** | pure-Rust deterministic build: splitmix64 levels, hash-order insertion, cosine parity (`src/ann.rs`; ADR-010; crossover bench: 48x at 100k, recall@10 0.967 @ ef=128) |
 
 Search-methodology note: arXiv/ACL/NeurIPS/SIGIR-style literature and major
 open-source RAG/vector engines informed the priority ranking in section 8 of

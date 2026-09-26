@@ -24,7 +24,7 @@ LKOS inverts the pipeline. Intelligence is front-loaded into ingestion: document
 
 ### 1.2 Contributions
 
-This revision (v0.9) makes the following concrete contributions over the v0.1 foundation:
+The v0.9 revision made the following concrete contributions over the v0.1 foundation; revision 0.10.0 adds the deterministic in-process HNSW dense channel (ADR-010, §7.3):
 
 1. **A real semantic dense channel.** v0.1's "dense" retrieval was signed feature hashing — lexical, not semantic. We implement a corpus-trained LSA provider (Deerwester et al. 1990; Halko et al. 2011) that is deterministic, local, and dependency-free, with honest cold-start fallback and per-chunk model lineage that makes model migration incremental and verifiable (§3.2, §3.6).
 2. **Retrieval-engine corrections with measured effect.** BM25 scores preserved in explanations (v0.1 discarded them), single-pass model-filtered dense scan (v0.1: N+1 blob queries), deterministic entity channel (v0.1: HashMap iteration order), full-window MMR (v0.1: silent degradation past k+16), and a deterministic lexical-overlap reranker (§3.3, §5.2).
@@ -79,7 +79,7 @@ The canonical store is one SQLite file (schema v5, forward migrations only, down
 
 ### 3.2 Corpus-trained semantic embeddings
 
-The provider interface is unchanged from v0.1 (`EmbeddingProvider`); v0.9 ships the real provider behind it:
+The provider interface is unchanged from v0.1 (`EmbeddingProvider`); v0.9 introduced the real provider behind it:
 
 1. **Vocabulary**: terms with document frequency ≥ `lsa_min_df`, capped at `lsa_max_vocab` by DF, totally ordered (DF desc, then lexicographic) for determinism.
 2. **Matrix**: per-chunk term counts weighted `(1 + ln tf) · ln(1 + N/df)`.
@@ -233,7 +233,7 @@ The adversarial process found nine defects that v0.1's functional tests had miss
 
 ## 9. Conclusion
 
-LKOS v0.9 demonstrates that a local-first knowledge engine can have real semantic retrieval, a typed evidence layer, and graph-correct incremental maintenance without a network, a GPU, or a bundled model — and that its quality claims can be made falsifiable: every architectural statement in this paper corresponds to either a passing test, an archived measurement, or an explicitly labeled limitation. The repository's own history is the strongest evidence of the method: the adversarial audit converted nine silent defects into nine regression tests. The finish line remains unchanged — LKOS must be infrastructure that other software can embed, query, update, observe, and build upon — and v0.9 moves it from "specification ahead of implementation" to "implementation that documents itself against measurement."
+LKOS v0.10 demonstrates that a local-first knowledge engine can have real semantic retrieval, a typed evidence layer, and graph-correct incremental maintenance without a network, a GPU, or a bundled model — and that its quality claims can be made falsifiable: every architectural statement in this paper corresponds to either a passing test, an archived measurement, or an explicitly labeled limitation. The repository's own history is the strongest evidence of the method: the adversarial audit converted nine silent defects into nine regression tests. The finish line remains unchanged — LKOS must be infrastructure that other software can embed, query, update, observe, and build upon — and v0.10 moves it from "specification ahead of implementation" to "implementation that documents itself against measurement."
 
 ## References
 

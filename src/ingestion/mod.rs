@@ -14,7 +14,8 @@
 //! - Archive-based formats are rejected beyond [`MAX_INPUT_BYTES`] raw and
 //!   [`MAX_DECOMPRESSED_BYTES`] inflated (decompression-bomb guard).
 //! - Entry counts and per-entry size caps stop nested-zip and header-lying
-//!   attacks; XML is parsed with `quick-xml` (no entity expansion, no DTD).
+//!   attacks; OOXML/HTML/XML are handled by hand-rolled string scanning (no XML
+//!   dependency, no entity expansion, no DTD processing).
 //!
 //! Normalization (`normalize`) is lossless w.r.t. words: CRLF→LF, strip NUL and
 //! other C0 control characters except newline/tab, collapse 3+ blank lines.

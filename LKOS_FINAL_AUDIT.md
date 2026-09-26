@@ -1,4 +1,10 @@
-# LKOS Final Audit — v0.9.0
+# LKOS Final Audit — v0.9.0 (historical)
+
+> v0.10.0 sync note: test counts below reflect the v0.9 suite (77). The current suite is **86 tests**
+> (see docs/TESTING.md), and the ANN row is superseded: deterministic in-process HNSW **shipped** in
+> v0.10 (`src/ann.rs`, ADR-010, `benchmarks/results/ann-crossover-v0.10.0.txt`); its persistence and
+> incremental-update limits are tracked as issue #9. Version-stamp staleness across v0.9-era docs is
+> tracked as issue #19 (SECOND ASCENT audit, 2026-09-27).
 
 **Auditor stance**: adversarial independent review. The builder's claims were re-verified against code, tests, and measurements. Verdicts use the mandated vocabulary: Implemented / Partially implemented / Experimental / Not implemented / Blocked / Deferred.
 
@@ -25,8 +31,8 @@
 | Atomic job claiming (multi-worker safe) | **Implemented** | immediate-tx conditional UPDATE (`claim_next_atomic`) |
 | Privacy: zero network | **Implemented by construction** | dependency graph contains no HTTP client; no `std::net` usage in engine paths; `grep`-audited |
 | Provenance to source spans | **Implemented** (chunk, entity-mention, claim+sentence-span, summary) | `provenance` table + `HitProvenance` |
-| LLM-optional | **Implemented** | all 77 tests pass with `NullProvider`; refusal contract test |
-| Real ANN (HNSW) | **Not implemented** — brute force with documented cap; frontier item | `max_dense_scan` |
+| LLM-optional | **Implemented** | all tests pass with `NullProvider` (77 at v0.9; 86 at v0.10); refusal contract test |
+| Real ANN (HNSW) | **Not implemented** at v0.9 — brute force with documented cap; frontier item. **Shipped in v0.10** (`src/ann.rs`, ADR-010) | `max_dense_scan`; v0.10: `ann_mode` |
 | NER-grade extraction | **Not implemented** — regexes, honestly labeled | `knowledge` module docs |
 | Bitemporal query semantics | **Partially implemented** — claim validity stored, not query-planned | `claims.valid_from/until` |
 | OCR / audio / video | **Not implemented** (documented non-goals at this stage) | NON_GOALS.md |
@@ -58,6 +64,6 @@
 
 ## E. Second-audit pass
 
-Post-fix re-run: `cargo test --release` = **75/75 pass**, `cargo clippy --all-targets` = **0 warnings**, benchmark re-run stable (±5% latency). Two audit-list items were consciously reclassified during the second pass (job timeout per-job: **Deferred** with issue; per-connection pooling: **Deferred** with issue) rather than claimed done. No hidden mocks were found; no documentation-only capabilities were found.
+Post-fix re-run: `cargo test --release` = **75/75 pass** (v0.9-era count; v0.10 suite = 86), `cargo clippy --all-targets` = **0 warnings**, benchmark re-run stable (±5% latency). Two audit-list items were consciously reclassified during the second pass (job timeout per-job: **Deferred** with issue; per-connection pooling: **Deferred** with issue) rather than claimed done. No hidden mocks were found; no documentation-only capabilities were found.
 
 — Audit closes at revision b5e5153+bench; links: [whitepaper](LKOS_ARCHITECTURE_WHITEPAPER.md) · [benchmarks](benchmarks/results/v0.9.0-run1.txt) · [issues](https://github.com/Bilal140202/lkos-system/issues)
