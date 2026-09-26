@@ -1,0 +1,62 @@
+% LKOS Working Notes - Revision 0.10.0
+% arXiv-style technical report, single-column article.
+% Cover is generated separately via HTML/Playwright (Template 03) and merged as page 0.
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{geometry}
+\geometry{a4paper, top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+% left == right (symmetry iron rule)
+
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{adjustbox}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{needspace}
+\usepackage[normalem]{ulem}
+\usepackage[htt]{hyphenat}   % allow hyphenation/breaking inside \texttt (long identifiers)
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+
+% hyperref - ALWAYS last among content packages
+\usepackage[
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=darkgray,
+    urlcolor=blue,
+    bookmarks=true,
+    bookmarksnumbered=true,
+    unicode=true
+]{hyperref}
+
+\widowpenalty=10000
+\clubpenalty=10000
+\emergencystretch=3em        % resolve residual overfull boxes gracefully
+
+\hypersetup{
+    pdftitle={LKOS: A Local-First Knowledge Intelligence Engine with Corpus-Trained Semantic Retrieval, Typed Evidence, and Provenance-Preserving Incremental Indexing},
+    pdfauthor={Bilal140202 (LKOS Project)},
+    pdfsubject={Local-first knowledge intelligence: corpus-trained semantic retrieval, typed evidence, provenance-preserving incremental indexing},
+    pdfkeywords={local-first, information retrieval, LSA, HNSW, approximate nearest neighbor, knowledge graph, provenance, SQLite, hybrid search}
+}
+
+\begin{document}
+
+% ═══════════════════════════════════════════════════════
+% NO TITLE PAGE IN .tex - Cover is generated separately
+% via HTML/Playwright and merged as page 0.
+% TOC must be the FIRST page of the body PDF.
+% ═══════════════════════════════════════════════════════
+
+\tableofcontents
+\newpage
+
+\input{sec1-intro}
+\input{sec2-arch}
+\input{sec3-results}
+\input{sec4-close}
+
+\end{document}

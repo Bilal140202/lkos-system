@@ -1,0 +1,189 @@
+% ─────────────────────────────────────────────────────────
+% §5 Results (3 tables), §6 Defects
+% ─────────────────────────────────────────────────────────
+
+\needspace{0.2\textheight}
+\section{Results}\label{sec:results}
+
+\subsection{System benchmark (200 docs, 2,400 chunks, 1.07M chars)}\label{sec:sysbench}
+
+\begin{table}[htbp]
+\centering
+\caption{System benchmark, v0.1 vs v0.9 (same corpus, same machine).}
+\label{tab:sysbench}
+\footnotesize
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}} l l l}
+\toprule
+Metric & v0.1 (run1) & v0.9 (run1) \\
+\midrule
+Ingestion throughput & 8.0 docs/s & 6.3 docs/s\textsuperscript{*} \\
+Lexical p50 / p99 & 2.49 / 3.1 ms & 3.47 / 4.94 ms \\
+Dense p50 / p99 & 14.0 / -- ms (hashing, N+1) & 6.28 / 6.66 ms (LSA, single-pass) \\
+Hybrid p50 / p99 & 14.8 / -- ms & 7.43 / 8.12 ms (RRF + rerank) \\
+Claims extracted & 0 & 4,800 \\
+Conflicts detected & 0 & 9,548 \\
+Entities / mentions & 3,552 / 12,000 & 2,384 / 22,400 \\
+LSA train / re-embed & -- & 0.06 s / 22.9k chunks/s \\
+\bottomrule
+\end{tabular*}
+
+\vspace{0.35em}
+\begin{minipage}{0.92\columnwidth}
+\footnotesize\textsuperscript{*}\,v0.9 ingestion now extracts ${\sim}24$ claims per
+document, runs indexed conflict detection, and builds 10.7k graph edges ---
+strictly more work per document; the dense-channel speedup ($-55\%$ p50) comes
+from replacing the N+1 blob fetch with one model-filtered scan.
+\end{minipage}
+\end{table}
+
+\subsection{Golden evaluation (16 queries, graded judgments, hashing fallback active)}\label{sec:goldenresults}
+
+\begin{table}[htbp]
+\centering
+\caption{Golden-set ablation across retrieval modes.}
+\label{tab:golden}
+\small
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}} l c c c c}
+\toprule
+Mode & Recall@5 & Recall@10 & MRR & nDCG@10 \\
+\midrule
+Lexical only & 0.938 & 0.938 & 0.938 & 0.873 \\
+Dense only & 1.000 & 1.000 & 1.000 & 0.966 \\
+Hybrid (+rerank) & 1.000 & 1.000 & 1.000 & 0.966 \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+Interpretation, deliberately conservative: on a 16-document corpus with a
+small vocabulary, feature hashing already produces usable topical geometry,
+and fusion matches it while retaining lexical guarantees. The golden set's
+purpose is regression protection and honest floor enforcement~--- \textbf{not}
+claims of state-of-the-art retrieval. Its size is a documented limitation
+(Section~\ref{sec:limitations}.5).
+
+\subsection{What the tests prove}\label{sec:testsprove}
+
+Beyond the evaluation numbers, 77 assertions encode behavioral contracts:
+idempotent ingestion; changed-content versioning; deleted documents vanish
+from documents, chunks, mentions, provenance \emph{and} the graph;
+corrupted-model libraries refuse to open rather than mix embedding spaces;
+\texttt{\$10 million} and \texttt{\$10M} do not conflict;
+\texttt{\$10M}/2023 vs \texttt{\$25M}/2024 is classified cross-period while
+same-period disagreement is classified as such; backed-off jobs are invisible
+until release and dead-letter after exhaustion; cancelled jobs never claim;
+five duplicate ingestions produce one document; the FTS index survives seven
+injection shapes; the engine answers queries from four threads concurrently
+with deterministic output.
+
+\subsection{ANN crossover (v0.10)}\label{sec:ann}
+
+Dense-channel comparison on a clustered 128-d corpus (40 topics, jitter 0.05;
+queries jitter actual cluster centers --- the regime the dense channel
+serves). $M=16$, efC$=200$; ground truth is the exact scan; all values
+deterministic. Source: \texttt{benchmarks/results/ann-crossover-v0.10.0.txt}.
+
+\begin{table}[htbp]
+\centering
+\caption{ANN crossover: brute force vs deterministic HNSW across corpus sizes.
+Rebuild = delete-10\% rebuild (invalidation strategy: full rebuild, ADR-010).}
+\label{tab:ann}
+\small
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}} l c cc cc c c}
+\toprule
+ & & \multicolumn{2}{c}{ANN ef=64} & \multicolumn{2}{c}{ANN ef=128} & & \\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}
+$N$ & Brute p50 & p50 & R@10 & p50 & R@10 & Build & Rebuild \\
+\midrule
+1,000 & 0.17 ms & 0.046 ms & 1.000 & 0.082 ms & 1.000 & 0.14 s & 0.12 s \\
+5,000 & 0.99 ms & 0.051 ms & 1.000 & 0.079 ms & 1.000 & 0.80 s & 0.72 s \\
+20,000 & 3.81 ms & 0.115 ms & 0.997 & 0.149 ms & 1.000 & 3.9 s & 3.4 s \\
+50,000 & 10.01 ms & 0.197 ms & 0.960 & 0.294 ms & 0.993 & 15.0 s & 12.7 s \\
+100,000 & 20.24 ms & 0.296 ms & 0.853 & 0.415 ms & 0.967 & 46.4 s & 40.4 s \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+Reading, deliberately conservative: the ANN path buys 34--87$\times$ dense p50
+at this scale but is \emph{approximate} --- the default
+\texttt{ann\_ef\_search}$=64$ holds recall@10 $\geq 0.95$ through ${\sim}50$k
+chunks on this corpus, and ef$=128$ through ${\sim}50$k at $\geq 0.99$ with
+0.967 at 100k. Break-even (build amortized against per-query savings) sits at
+${\sim}1.1$k--2.3k dense queries, which is why \texttt{auto} keeps the exact
+scan below \texttt{ann\_min\_chunks} $= 20{,}000$ and why the engine caches
+the index across queries. Deletion is quantified as full-rebuild cost
+($\approx 0.87\times$ one build) --- the fingerprint makes the rebuild
+\emph{correct}; a serialized incremental graph is registered future work, not
+claimed.
+
+Two defects surfaced only because the harness measured recall against exact
+ground truth; both are recorded in Section~\ref{sec:defects} (items 11--12)
+with their fixes.
+
+\needspace{0.2\textheight}
+\section{Defects Found by the Audit (and Fixed)}\label{sec:defects}
+
+The adversarial process found nine defects that v0.1's functional tests had
+missed; a tenth surfaced afterwards through the repository's own Windows CI
+gate:
+
+\begin{enumerate}[itemsep=3pt]
+\item \textbf{Entity-regex greediness} --- ``Omega Corp partnered with Tau
+Corp'' extracted as a single organization. Fixed by truncation at the first
+legal-suffix boundary; regression-tested.
+\item \textbf{Regex alternation order} --- \texttt{[MBKm\%]} matched the
+\texttt{m} of ``million'', so ``\$10 million'' parsed as 10, creating a false
+100\% conflict with ``\$10M''. Fixed by ordering longer alternatives first.
+\item \textbf{Quadratic conflict materialization} --- 2,400 numeric claims
+$\rightarrow$ ${\sim}500$k pairwise conflict rows, stalling ingestion.
+Bounded (40-comparison window, 4 rows/claim) with rationale documented.
+\item \textbf{NULL-intolerant neighbor reads} --- rebuilt graph edges (no
+\texttt{last\_document\_id}) were silently dropped by \texttt{filter\_map} on
+a type error, making post-delete neighborhoods empty. Found by the
+graph-correct-deletion test; fixed with \texttt{Option<i64>}.
+\item \textbf{Stale-edge deletion} --- v0.1 never cleaned co-occurrence
+edges; deleting a document left permanent phantom relations. Fixed via
+subgraph recompute.
+\item \textbf{\texttt{embedding\_dim} ignored} --- v0.1 recorded the
+configured dimension while hardcoding 256, so a library could lie about its
+own geometry. Fixed; mismatch is now a typed error.
+\item \textbf{\texttt{worker\_threads} dead} --- recorded but never used. Now
+honored.
+\item \textbf{Backoff/cancellation absent} --- failed jobs requeued
+immediately and could not be cancelled; deadline-free retry loops were
+possible. Fixed with \texttt{run\_at} + dead-letter + cooperative
+cancellation.
+\item \textbf{FTS score discarded} --- every lexical hit reported
+\texttt{bm25: 0.0}, making score-based explanation impossible. Fixed (score
+preserved, higher-is-better normalized).
+\item \textbf{Migration stamps were not crash-atomic} (found by the project's
+own Windows CI runner, post-v0.9). \texttt{user\_version} was stamped once
+after \emph{all} batches, and scratch databases were named by wall-clock
+timestamp --- whose effective granularity on Windows let two parallel tests
+open the same fresh scratch file and migrate it concurrently, failing with
+\texttt{duplicate column name: knowledge\_json}. A crash between batches
+could likewise leave a fully-migrated library with a stale stamp that could
+never reopen. Fixed in three layers: per-batch version stamps;
+signature-column self-healing (a batch whose signature column already exists
+is skipped, recovering stale-stamped databases); and process-unique scratch
+paths (pid + atomic counter). Regression-tested
+(\texttt{migration\_self\_heals\_when\_version\_stamp\_lags},
+\texttt{parallel\_in\_memory\_engines\_are\_isolated}).
+\item \textbf{HNSW result-heap ordering was inverted} (found by the v0.10
+crossover harness, pre-release). The kept-results heap used a reversed
+\texttt{Ord}, so its overflow \texttt{pop()} evicted the \emph{best} candidate
+and the stop/accept gates compared against the best instead of the worst ---
+measured recall@10 collapsed to 0.54 on a 2,000-node clustered corpus. Fixed
+by defining \texttt{Ord} forward on the kept-results entry (\texttt{peek()} =
+worst kept, \texttt{pop()} = evict worst) and reversed on the frontier entry
+(\texttt{pop()} = nearest); the heap contract is now documented on the types
+and locked by the exactness test (ef $\geq N$ must reproduce the brute-force
+ranking).
+\item \textbf{Ascending-id insertion starved cross-cluster bridges} (found by
+the same harness at scale). Inserting nodes in id order on a
+cluster-sequential corpus built isolated per-cluster subgraphs; recall
+\emph{saturated} independent of ef (0.937 at ef $\geq 256$ on a 100k probe) ---
+the signature of unreachable nodes, not insufficient search width. Fixed with
+a deterministic hash-order insertion shuffle (splitmix64 of the chunk id),
+which interleaves clusters from the first inserts; recall now scales smoothly
+with ef (0.987 @ ef=128, 1.000 @ ef=512 on the probe corpus).
+\end{enumerate}

@@ -1,0 +1,254 @@
+% ─────────────────────────────────────────────────────────
+% §3 Architecture (with pipeline figures), §4 Evaluation Methodology
+% ─────────────────────────────────────────────────────────
+
+\needspace{0.2\textheight}
+\section{Architecture}\label{sec:architecture}
+
+\subsection{Overview}\label{sec:overview}
+
+Figure~\ref{fig:ingestion} shows the ingestion pipeline; Figure~\ref{fig:query}
+shows the query pipeline. The canonical store is one SQLite file (schema v5,
+forward migrations only, downgrade rejected explicitly). FTS5 is
+external-content with trigger synchronization. Jobs, events, provenance,
+entities, claims, conflicts, relationships, and the LSA model all live in the
+same file --- the library is portable by \texttt{cp}.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+  stage/.style={draw=black!55, rounded corners=2.5pt, text width=2.25cm,
+                minimum height=0.95cm, align=center, font=\small,
+                fill=blue!6, inner sep=2pt},
+  arr/.style={-{Stealth[length=5pt]}, thick, black!55}
+]
+  % Row A: stages 1-6
+  \node[stage] (n1) {Source};
+  \node[stage, right=0.55cm of n1] (n2) {Ingestion\\{\scriptsize bounded extractors}};
+  \node[stage, right=0.55cm of n2] (n3) {Normalization};
+  \node[stage, right=0.55cm of n3] (n4) {Chunking\\{\scriptsize structure-aware}};
+  \node[stage, right=0.55cm of n4] (n5) {Embedding\\{\scriptsize LSA / hashing}};
+  \node[stage, right=0.55cm of n5] (n6) {Extraction\\{\scriptsize entities, claims}};
+  % Row B: stages 7-12
+  \node[stage, below=0.9cm of n1] (n7) {Resolution\\{\scriptsize exact, alias, fuzzy}};
+  \node[stage, right=0.55cm of n7] (n8) {Graph\\{\scriptsize typed edges}};
+  \node[stage, right=0.55cm of n8] (n9) {Claims + Conflicts};
+  \node[stage, right=0.55cm of n9] (n10) {Provenance\\{\scriptsize spans}};
+  \node[stage, right=0.55cm of n10] (n11) {Indexing\\{\scriptsize SQLite + FTS5}};
+  \node[stage, right=0.55cm of n11] (n12) {Events};
+  % Flow
+  \draw[arr] (n1) -- (n2);
+  \draw[arr] (n2) -- (n3);
+  \draw[arr] (n3) -- (n4);
+  \draw[arr] (n4) -- (n5);
+  \draw[arr] (n5) -- (n6);
+  \draw[arr] (n6.south) -- ++(0,-0.4) -| (n7.north);
+  \draw[arr] (n7) -- (n8);
+  \draw[arr] (n8) -- (n9);
+  \draw[arr] (n9) -- (n10);
+  \draw[arr] (n10) -- (n11);
+  \draw[arr] (n11) -- (n12);
+\end{tikzpicture}}
+\caption{Ingestion pipeline. Detailed treatment per stage appears in
+Sections \ref{sec:embeddings} through \ref{sec:jobs}.}\label{fig:ingestion}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.92\columnwidth}{!}{%
+\begin{tikzpicture}[
+  stage/.style={draw=black!55, rounded corners=2.5pt, text width=2.1cm,
+                minimum height=0.95cm, align=center, font=\small,
+                fill=blue!6, inner sep=2pt},
+  opt/.style={stage, dashed, fill=none},
+  arr/.style={-{Stealth[length=5pt]}, thick, black!55}
+]
+  % Row A
+  \node[stage] (q1) {Query};
+  \node[stage, right=0.6cm of q1] (q2) {Planner\\{\scriptsize intent, temporal}};
+  \node[stage, right=0.6cm of q2] (q3) {Channels\\{\scriptsize lexical + dense}};
+  \node[stage, right=0.6cm of q3] (q4) {RRF\\{\scriptsize $k=60$}};
+  % Row B
+  \node[stage, below=0.9cm of q1] (q5) {Boosts};
+  \node[stage, right=0.6cm of q5] (q6) {Rerank\\{\scriptsize lexical overlap}};
+  \node[stage, right=0.6cm of q6] (q7) {MMR\\{\scriptsize $\lambda=0.7$}};
+  \node[stage, right=0.6cm of q7] (q8) {Context assembly\\{\scriptsize budgeted, cited}};
+  \node[opt,   right=0.6cm of q8] (q9) {LLM answer\\{\scriptsize optional}};
+  % Flow
+  \draw[arr] (q1) -- (q2);
+  \draw[arr] (q2) -- (q3);
+  \draw[arr] (q3) -- (q4);
+  \draw[arr] (q4.south) -- ++(0,-0.4) -| (q5.north);
+  \draw[arr] (q5) -- (q6);
+  \draw[arr] (q6) -- (q7);
+  \draw[arr] (q7) -- (q8);
+  \draw[arr, dashed] (q8) -- (q9);
+\end{tikzpicture}}
+\caption{Query pipeline. The dense channel is exact below the measured ANN
+crossover and HNSW-served above it (Section~\ref{sec:ann}).}\label{fig:query}
+\end{figure}
+
+\subsection{Corpus-trained semantic embeddings}\label{sec:embeddings}
+
+The provider interface is unchanged from v0.1 (\texttt{EmbeddingProvider});
+v0.9 ships the real provider behind it:
+
+\begin{enumerate}[itemsep=2pt]
+\item \textbf{Vocabulary}: terms with document frequency $\geq$
+\texttt{lsa\_min\_df}, capped at \texttt{lsa\_max\_vocab} by DF, totally
+ordered (DF desc, then lexicographic) for determinism.
+\item \textbf{Matrix}: per-chunk term counts weighted
+$(1+\ln\mathrm{tf})\cdot\ln(1+N/\mathrm{df})$.
+\item \textbf{Factorization}: randomized SVD with a fixed-seed Knuth LCG
+sketch (Box--Muller Gaussians), 4 power iterations, modified Gram--Schmidt
+orthonormalization, and a sign convention fixing each latent's largest
+component positive.
+\item \textbf{Encoding}: text $\rightarrow$ $\sum$ over in-vocabulary terms of
+$(1+\ln\mathrm{tf})\cdot\mathit{term\_vector}$, L2-normalized; fully
+out-of-vocabulary texts project to the zero vector (cosine 0 against
+everything --- the lexical channel covers them; no fake similarity is
+manufactured).
+\item \textbf{Cold start}: below \texttt{semantic\_min\_chunks} the provider
+\emph{is} the hashing embedder \cite{weinberger2009} and reports
+\texttt{hashing-lex-v1} as its name. Above it, training is available via API
+or job; the provider then reports \texttt{lsa-pmi-svd-v1}.
+\end{enumerate}
+
+Determinism is test-asserted: training twice on the same corpus yields
+bit-identical vectors (\texttt{lsa\_training\_is\_deterministic}).
+
+\subsection{Retrieval engine}\label{sec:retrieval}
+
+Channels: BM25 (FTS5, prefix-AND sanitization), dense cosine (model-filtered,
+single-pass), entity intersection (deterministic id-ordered). Fusion: RRF
+$k=60$ with per-intent weights (Exact 0.25/0.75, Temporal 0.35/0.65, default
+config 0.5/0.5). Boosts: positional authority (first chunks $1.2\times$, tail
+$1.1\times$), exact phrase $+0.08$, known entity $+0.03$, section-title
+overlap, freshness under \texttt{Latest} intent (re-rank, not filter ---
+v0.1's hard filter could drop the newest evidence). Reranking: deterministic
+lexical-overlap score (query-term coverage with length normalization) blended
+50/50 with the fused score over the top-24 candidates --- the reranker can
+only reorder channel-surfaced candidates, never inject unseen ones. Diversity:
+MMR $\lambda=0.7$ with embeddings prefetched for the full candidate window
+(cap 64). Every hit carries \texttt{matched\_by} evidence including its true
+BM25 score.
+
+\subsection{Claims and the conflict taxonomy}\label{sec:claims}
+
+Three deterministic SVO families (numeric metrics, release/action verbs,
+copula) produce claims with sentence offsets and temporal validity bounds
+(since/from/as of/in $\rightarrow$ \texttt{valid\_from};
+until/through/by $\rightarrow$ \texttt{valid\_until}). Negation is detected
+and lowers confidence. Numeric objects are normalized through a magnitude
+parser (\texttt{\$10 million} $\equiv$ \texttt{\$10M} $\equiv$ 10\,000\,000;
+commas, \%, B/K handled; the parser scans left-to-right --- v0.1 kept only the
+last token). Conflict detection compares against the most recent 40
+same-metric claims (indexed lookup) and materializes at most 4 conflict rows
+per claim --- disagreement \emph{existence} is the signal; full pair
+enumeration is quadratic and uninformative (measured in
+Section~\ref{sec:defects}). Each conflict carries a taxonomy kind and a
+human-readable explanation with both validity periods.
+
+\subsection{Entity resolution and the graph}\label{sec:entities}
+
+Resolution stages: (1) canonical key (lowercase, legal-suffix stripped),
+(2) alias table (includes user-supplied aliases via
+\texttt{add\_entity\_alias}), (3) type-guarded Jaro--Winkler $\geq 0.93$ with
+first-letter blocking, confidence-scaled. Merges are audited
+(\texttt{entity\_merge\_log}) and recompute the affected subgraph. Graph
+edges: \texttt{CO\_OCCURS\_WITH} (weight = co-mention chunks) and
+predicate-typed \texttt{RELATES\_TO\_*} edges derived from claims. Deletion
+correctness: removing a document recomputes all edges around its entities
+from surviving mentions --- v0.1's stale-edge defect is closed and
+test-asserted. Reads: one-hop neighborhoods, multi-hop BFS (depth $\leq 3$,
+deduplicated), degree centrality.
+
+\subsection{Incremental model migration}\label{sec:migration}
+
+Each chunk records the embedding model that produced its vector
+(\texttt{chunks.embedding\_model}, backfilled at migration). Training
+installs a new model; \texttt{reembed\_stale\_chunks} migrates vectors in
+batches of 256 with progress reporting and cooperative cancellation, at
+22.9k chunks/s measured. Query-time dense search only compares vectors from
+one model --- cross-model cosine is impossible by construction. Opening a
+library whose recorded model identity cannot be restored (e.g., corrupted
+\texttt{lsa\_terms}) fails with a typed \texttt{EmbeddingMismatch} error
+rather than silently mixing spaces.
+
+\subsection{Document intelligence}\label{sec:documents}
+
+Bounded extractors: DOCX (OOXML \texttt{w:t} runs per paragraph), XLSX
+(shared-strings + inline cells per row), PPTX (slide runs), EPUB (XHTML
+spine), HTML/XML (script/style/head removal, block tags $\rightarrow$ line
+breaks, named + numeric entity decoding), text/markdown/20+ code
+languages/CSV/TSV/JSON. Guards: 64\,MiB raw cap, 256\,MiB decompressed cap
+enforced with \texttt{take()} (not header trust), 4096-entry archive cap. PDF
+is behind the \texttt{pdf} cargo feature (pure-Rust \texttt{pdf-extract}),
+disabled by default to keep the dependency graph light; the error for a
+disabled feature is explicit and actionable.
+
+\subsection{Background engine}\label{sec:jobs}
+
+Jobs are SQLite rows claimed atomically (immediate transaction + conditional
+UPDATE --- v0.1's SELECT-then-UPDATE race is closed). Failures re-queue with
+exponential backoff ($\mathit{base}\cdot 2^{\mathit{attempt}-1}$, capped,
+release time \texttt{run\_at} --- hidden until due) and dead-letter after
+\texttt{max\_attempts} with payload and error preserved. Cancellation is
+cooperative (workers check between stages; pending jobs cancellable by id).
+Progress is reported for long jobs (re-embed reports percentage).
+\texttt{worker\_threads} is honored --- v0.1 recorded but ignored it.
+
+\needspace{0.2\textheight}
+\section{Evaluation Methodology}\label{sec:methodology}
+
+\subsection{The failure of the v0.1 benchmark (self-criticism)}\label{sec:v1-failure}
+
+v0.1's benchmark generated probe queries that echoed the generating
+document's title tokens, then reported Recall@10 = 1.000. Because the probes
+were lexically identical to the ground-truth document's most salient tokens,
+the number carried no information about retrieval quality. Worse, the
+synthetic corpus contained no sentences matching the claim extractor, so the
+entire evidence layer produced zero artifacts (\texttt{claims 0,
+conflicts 0}) and was never exercised end-to-end. We treat this as the
+canonical example of circular evaluation and replaced it.
+
+\subsection{Golden evaluation (graded qrels)}\label{sec:golden}
+
+\texttt{tests/golden\_eval.rs} fixes a 16-document corpus (four topics
+$\times$ four documents, two chunks each), 16 queries, and document-level
+graded judgments (3 = directly answers, 2 = topical, 1 = marginal). Metrics:
+Recall@5/10, MRR, nDCG@10 with graded gain $2^{g}-1$. The suite runs every
+query in lexical-only, dense-only, and hybrid modes (ablation harness),
+asserts honest floors: hybrid MRR no worse than 0.50, nDCG@10 no worse than
+0.55, Recall@10 no worse than 0.85, and hybrid within 0.05 MRR of the best
+single channel, and asserts rank reproducibility across independently
+constructed engines.
+
+\subsection{Adversarial suite}\label{sec:adversarial}
+
+\texttt{tests/security\_hostile.rs} covers: oversize input at the cap,
+invalid UTF-8, corrupt OOXML, decompression pressure, script/style leakage,
+seven FTS-injection query shapes with post-attack index health checks,
+Zalgo/emoji/control-character payloads, five-fold re-ingestion idempotency,
+empty and 1\,MB queries, and graph correctness after deleting documents that
+contributed the only evidence for specific edges.
+
+\subsection{System benchmark}\label{sec:bench}
+
+\texttt{lkos-bench} measures ingestion throughput, per-mode query latency
+(p50\slash p95\slash p99), self-supervised retrieval sanity, and semantic
+training and re-embedding throughput. It also measures the ANN dense-channel
+crossover (brute vs HNSW build, latency, recall, and deletion across corpus
+sizes) and library statistics.
+Archived output: \texttt{benchmarks/results/v0.9.0-run1.txt},
+\texttt{benchmarks/results/ann-crossover-v0.10.0.txt}.
+
+\subsection{Test inventory}\label{sec:tests}
+
+86 tests: 23 end-to-end engine invariants (incl.\ 2 migration-resilience
+regressions), 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial
+tests, 2 golden-evaluation tests, 5 ANN integration tests (exactness,
+invalidation, policy paths), 14 module unit tests (LSA\slash JW\slash temporal\slash HNSW),
+2 doc tests. All pass in release mode on this machine; CI runs the same suite
+on Linux\slash macOS\slash Windows.
