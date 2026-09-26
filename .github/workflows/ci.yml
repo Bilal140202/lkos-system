@@ -40,3 +40,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Tests
         run: cargo test --release
+
+  doc-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Documentation truth guard (issue #19)
+        run: |
+          set -e
+          # 1. Version consistency: Cargo.toml version must appear as the release in README.
+          CARGO_VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          echo "Cargo version: $CARGO_VER"
+          grep -q "v$CARGO_VER" README.md || { echo "README does not mention v$CARGO_VER"; exit 1; }
+          # 2. No stale test-count stamps from earlier releases.
+          if grep -nE "7[57] automated tests" README.md LKOS_*.md docs/*.md; then
+            echo "stale test-count stamp found"; exit 1
+          fi
+          if grep -n "Tests: 75/75" LKOS_*.md; then
+            echo "stale 'Tests: 75/75' stamp found"; exit 1
+          fi
+          # 3. No phantom dependencies: doc comments must not name crates absent from Cargo.toml.
+          if grep -rn "quick-xml" src/ --include="*.rs"; then
+            echo "phantom dependency claim found"; exit 1
+          fi
+          # 4. Schema version: README user_version claim must match src/storage SCHEMA_VERSION.
+          SCHEMA=$(sed -n 's/.*SCHEMA_VERSION: i64 = \([0-9]*\).*/\1/p' src/storage/mod.rs | head -1)
+          grep -q "user_version = $SCHEMA" README.md || { echo "README schema stamp != $SCHEMA"; exit 1; }
+          echo "doc-guard: OK"
