@@ -2,7 +2,7 @@
 
 ## Suite
 
-`cargo test` → 86 tests, all green, fully offline:
+`cargo test` → 90 tests, all green, fully offline (v0.10.1):
 
 | Suite | Count | Covers |
 |---|---|---|
@@ -10,9 +10,10 @@
 | `tests/unit_quality.rs` | 19 | deterministic core units + golden retrieval corpus |
 | `tests/semantic_tests.rs` | 9 | LSA training determinism, model lineage, incremental re-embed, semantic e2e |
 | `tests/security_hostile.rs` | 12 | adversarial red-team: oversize/corrupt inputs, FTS injection, idempotency under attack, graph-correct deletion |
-| `tests/golden_eval.rs` | 2 | graded qrels evaluation (Recall/MRR/nDCG) + per-mode ablation floors |
+| `tests/golden_eval.rs` | 3 | graded qrels evaluation (Recall/MRR/nDCG) + per-mode ablation floors, in **two fixed configurations**: semantic-off (hashing fallback) and semantic-on (trained LSA dense channel); both deterministic |
+| `tests/paraphrase_probe.rs` | 3 | zero-token-overlap paraphrase transfer through the dense channel (8 pairs, mechanical overlap check, cross-theme ordering), plus a hashing-fallback discrimination canary |
 | `tests/ann_tests.rs` | 5 | HNSW exactness (ef ≥ N == brute force), cache invalidation on delete/insert, auto degrade-past-cap, brute cap enforcement, filtered-query bypass |
-| module units (in-crate) | 14 | LSA math, Jaro–Winkler, temporal parsing, HNSW determinism/recall/edges |
+| module units (in-crate) | 14 | LSA math (incl. spectral subspace selection), Jaro–Winkler, temporal parsing, HNSW determinism/recall/edges |
 | doc-tests | 2 | README/engine examples compile |
 
 ## End-to-end invariants (property-style, spec §95)

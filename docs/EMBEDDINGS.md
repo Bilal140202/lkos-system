@@ -7,7 +7,9 @@
 | Provider | name | Semantic? | Notes |
 |---|---|---|---|
 | `LsaEmbedder` (untrained) | `hashing-lex-v1` | No (lexical hashing) | cold start; Weingberger-style unigram+bigram+char-trigram |
-| `LsaEmbedder` (trained) | `lsa-pmi-svd-v1` | Corpus-relative semantics | PPMI/tf-idf matrix + randomized SVD, deterministic seeds/signs |
+| `LsaEmbedder` (trained) | `lsa-pmi-svd-v1` | Corpus-relative semantics | TF-IDF matrix ((1+ln tf)·ln(1+N/df)) + randomized SVD; the model name is a legacy identifier from v0.9 (the weighting was never PMI) |
+
+Trainer note (v0.10.1, ADR-011): the truncated subspace is selected **spectrally** — sketch columns are ranked by pre-orthonormalization energy (≈ singular values, Halko et al. 2011 §1.4) and the top-`dim` kept. Earlier releases kept the first `dim` sketch-order columns, an arbitrary subspace that measurably scrambled cross-topic similarity (detected by the issue #8 paraphrase probe).
 
 ## Determinism
 

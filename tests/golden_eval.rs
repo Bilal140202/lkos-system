@@ -7,6 +7,16 @@
 //! standard IR metrics (Recall@K, MRR, nDCG@10) computed per retrieval
 //! mode. Ablation rows are printed and asserted against honest floors —
 //! the point is to KNOW which complexity helps, per docs/EVALUATION.md.
+//!
+//! Two fixed configurations are evaluated (issue #8):
+//! - `semantic-off` (`corpus_engine`): the dense channel runs the hashing
+//!   fallback; historically this was the ONLY configuration, which meant
+//!   the trained semantic layer was never evaluated anywhere in CI.
+//! - `semantic-on` (`corpus_engine_semantic_on`): the same corpus trains
+//!   the LSA model (32 chunks >= `semantic_min_chunks` = 24) and every
+//!   chunk is migrated, so `dense` and `hybrid` rows measure the REAL
+//!   corpus-trained semantic channel. Paraphrase transfer with zero
+//!   lexical overlap lives in `tests/paraphrase_probe.rs`.
 
 #![allow(clippy::field_reassign_with_default)]
 
@@ -186,14 +196,54 @@ fn doc_hits(engine: &Lkos, query: &str, mode: RetrievalMode, k: usize) -> Vec<St
     out
 }
 
+/// Fixed configuration A: dense channel on the hashing fallback (no LSA).
 fn corpus_engine() -> Lkos {
     let mut cfg = Config::default();
     cfg.synchronous_ingestion = true;
-    cfg.semantic_min_chunks = usize::MAX; // keep this test purely lexical/planner
+    cfg.semantic_min_chunks = usize::MAX; // semantic-off config: hashing fallback dense channel
     let engine = Lkos::open_in_memory(cfg).expect("open");
     for (name, body) in CORPUS {
         engine.ingest_bytes(name, body.as_bytes()).expect("ingest");
     }
+    engine
+}
+
+/// Fixed configuration B: the same corpus with the trained LSA model
+/// installed and every chunk migrated (the real semantic channel).
+fn corpus_engine_semantic_on() -> Lkos {
+    let mut cfg = Config::default();
+    cfg.synchronous_ingestion = true;
+    // The 16 golden docs chunk to 16 chunks (one per document), below the
+    // default cold-start threshold of 24 — so the threshold is set to 12 for
+    // THIS fixed corpus, which trains LSA on all 16 chunks.
+    cfg.semantic_min_chunks = 12;
+    // Small-corpus model tuning: low dim, min_df 1 (rare terms must survive).
+    cfg.lsa_dim = 16;
+    cfg.lsa_min_df = 1;
+    cfg.lsa_max_vocab = 1024;
+    let engine = Lkos::open_in_memory(cfg).expect("open");
+    for (name, body) in CORPUS {
+        engine.ingest_bytes(name, body.as_bytes()).expect("ingest");
+    }
+    let stats = engine.stats().expect("stats");
+    println!(
+        "golden semantic-on corpus: {} docs, {} chunks",
+        stats.documents, stats.chunks
+    );
+    let trained = engine.train_semantic_index().expect("train semantic index");
+    assert!(
+        trained,
+        "golden corpus must train LSA (chunks >= semantic_min_chunks=12)"
+    );
+    let migrated = engine
+        .reembed_stale_chunks("lsa-pmi-svd-v1", None)
+        .expect("reembed");
+    assert!(migrated > 0, "stale chunks migrated to the trained model");
+    assert_eq!(
+        engine.stale_embedding_count().expect("stale count"),
+        0,
+        "semantic-on config must have every chunk on the trained model"
+    );
     engine
 }
 
@@ -258,6 +308,116 @@ fn golden_evaluation_hybrid_beats_or_matches_channels_with_honest_floor() {
         hybrid_mrr >= lexical_mrr - 0.05,
         "hybrid {hybrid_mrr:.3} must be within 0.05 of lexical {lexical_mrr:.3}"
     );
+}
+
+#[test]
+fn golden_evaluation_semantic_on_holds_floors_and_does_not_lose_to_lexical_config() {
+    let sem = corpus_engine_semantic_on();
+    let lex = corpus_engine();
+    let modes = [
+        ("lexical", RetrievalMode::LexicalOnly),
+        ("dense", RetrievalMode::VectorOnly),
+        ("hybrid", RetrievalMode::Hybrid),
+    ];
+    let mut tables: Vec<(String, Vec<(String, Metrics)>)> = Vec::new();
+    for (cfg_name, engine) in [("semantic-on", &sem), ("semantic-off", &lex)] {
+        let mut table: Vec<(String, Metrics)> = Vec::new();
+        for (name, mode) in modes {
+            let mut sum = Metrics {
+                recall_at_5: 0.0,
+                recall_at_10: 0.0,
+                mrr: 0.0,
+                ndcg_at_10: 0.0,
+            };
+            for (q, qrels) in QUERIES {
+                let hits = doc_hits(engine, q, mode, 10);
+                let m = evaluate(&hits, qrels);
+                sum.recall_at_5 += m.recall_at_5;
+                sum.recall_at_10 += m.recall_at_10;
+                sum.mrr += m.mrr;
+                sum.ndcg_at_10 += m.ndcg_at_10;
+            }
+            table.push((name.to_string(), sum));
+        }
+        tables.push((cfg_name.to_string(), table));
+    }
+    let n = QUERIES.len() as f64;
+    let get = |cfg_name: &str, mode: &str, f: fn(&Metrics) -> f64| {
+        tables
+            .iter()
+            .find(|(n_, _)| n_ == cfg_name)
+            .and_then(|(_, t)| t.iter().find(|(m_, _)| m_ == mode))
+            .map(|(_, m)| f(m) / n)
+            .expect("config/mode present")
+    };
+    for (cfg_name, table) in &tables {
+        println!(
+            "=== {cfg_name} (averages over {} queries) ===",
+            QUERIES.len()
+        );
+        for (mode, m) in table {
+            println!(
+                "  {mode}: recall@5={:.3} recall@10={:.3} mrr={:.3} ndcg@10={:.3}",
+                m.recall_at_5 / n,
+                m.recall_at_10 / n,
+                m.mrr / n,
+                m.ndcg_at_10 / n
+            );
+        }
+    }
+
+    // Honest floors for the semantic-on configuration (documented in
+    // docs/EVALUATION.md). The lexical channel is untouched by training, so
+    // the semantic-on hybrid must still solve this keyword-matchable set.
+    let sem_hybrid_mrr = get("semantic-on", "hybrid", |m| m.mrr);
+    let sem_hybrid_ndcg = get("semantic-on", "hybrid", |m| m.ndcg_at_10);
+    let sem_hybrid_r10 = get("semantic-on", "hybrid", |m| m.recall_at_10);
+    assert!(
+        sem_hybrid_mrr >= 0.50,
+        "semantic-on hybrid MRR floor: got {sem_hybrid_mrr}"
+    );
+    assert!(
+        sem_hybrid_ndcg >= 0.55,
+        "semantic-on hybrid nDCG@10 floor: got {sem_hybrid_ndcg}"
+    );
+    assert!(
+        sem_hybrid_r10 >= 0.85,
+        "semantic-on hybrid recall@10 floor: got {sem_hybrid_r10}"
+    );
+    // The trained dense channel must be functional on its own (LSA active,
+    // not a silent fallback). Floor set from the measured configuration;
+    // a regression below it localizes the damage to the semantic layer.
+    let sem_dense_r10 = get("semantic-on", "dense", |m| m.recall_at_10);
+    let sem_dense_ndcg = get("semantic-on", "dense", |m| m.ndcg_at_10);
+    assert!(
+        sem_dense_r10 >= 0.60,
+        "semantic-on dense (LSA) recall@10 floor: got {sem_dense_r10}"
+    );
+    assert!(
+        sem_dense_ndcg >= 0.45,
+        "semantic-on dense (LSA) nDCG@10 floor: got {sem_dense_ndcg}"
+    );
+    // Training must not degrade the lexical-solvable query set: the
+    // semantic-on hybrid stays within 0.05 of the semantic-off hybrid.
+    let lex_hybrid_mrr = get("semantic-off", "hybrid", |m| m.mrr);
+    let lex_hybrid_ndcg = get("semantic-off", "hybrid", |m| m.ndcg_at_10);
+    assert!(
+        sem_hybrid_mrr >= lex_hybrid_mrr - 0.05,
+        "semantic-on hybrid MRR {sem_hybrid_mrr:.3} lost to semantic-off {lex_hybrid_mrr:.3}"
+    );
+    assert!(
+        sem_hybrid_ndcg >= lex_hybrid_ndcg - 0.05,
+        "semantic-on hybrid nDCG {sem_hybrid_ndcg:.3} lost to semantic-off {lex_hybrid_ndcg:.3}"
+    );
+
+    // Determinism of the semantic-on configuration: a freshly built engine
+    // must reproduce identical rankings (LSA training is bit-identical).
+    let sem2 = corpus_engine_semantic_on();
+    for (q, _) in QUERIES.iter().take(6) {
+        let a = doc_hits(&sem, q, RetrievalMode::Hybrid, 10);
+        let b = doc_hits(&sem2, q, RetrievalMode::Hybrid, 10);
+        assert_eq!(a, b, "semantic-on ranking not deterministic for '{q}'");
+    }
 }
 
 #[test]

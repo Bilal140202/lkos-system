@@ -1,0 +1,50 @@
+# LKOS v0.10.1 — evaluation integrity (issue #8)
+Date: 2026-09-27T01:12:36Z | cargo 1.98.1 | release profile | linux x86_64
+
+== Golden set, BOTH configurations (16 docs / 16 chunks, 16 graded queries) ==
+golden semantic-on corpus: 16 docs, 16 chunks
+=== semantic-on (averages over 16 queries) ===
+  lexical: recall@5=0.938 recall@10=0.938 mrr=0.938 ndcg@10=0.873
+  dense: recall@5=1.000 recall@10=1.000 mrr=1.000 ndcg@10=0.956
+  hybrid: recall@5=1.000 recall@10=1.000 mrr=1.000 ndcg@10=0.956
+=== semantic-off (averages over 16 queries) ===
+  lexical: recall@5=0.938 recall@10=0.938 mrr=0.938 ndcg@10=0.873
+  dense: recall@5=1.000 recall@10=1.000 mrr=1.000 ndcg@10=0.966
+  hybrid: recall@5=1.000 recall@10=1.000 mrr=1.000 ndcg@10=0.966
+golden semantic-on corpus: 16 docs, 16 chunks
+test golden_evaluation_semantic_on_holds_floors_and_does_not_lose_to_lexical_config ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.74s
+
+== Semantic-off configuration (legacy rows, unchanged) ==
+=== lexical (averages over 16 queries) ===
+recall@5=0.938 recall@10=0.938 mrr=0.938 ndcg@10=0.873
+=== dense (averages over 16 queries) ===
+recall@5=1.000 recall@10=1.000 mrr=1.000 ndcg@10=0.966
+=== hybrid (averages over 16 queries) ===
+recall@5=1.000 recall@10=1.000 mrr=1.000 ndcg@10=0.966
+test golden_evaluation_hybrid_beats_or_matches_channels_with_honest_floor ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.25s
+
+== Paraphrase-transfer probe (8 zero-overlap pairs, LSA dense channel, dim 8) ==
+  'guitar chords' -> music-strings.md rank 2 | top3 = ["music-folk.md", "music-strings.md", "garden-shed.md"]
+  'singer vocals' -> music-opera.md rank 2 | top3 = ["music-vocal.md", "music-opera.md", "ocean-deep.md"]
+  'fertilizer vegetables' -> garden-soil.md rank 2 | top3 = ["garden-kitchen.md", "garden-soil.md", "music-strings.md"]
+  'blooming flowers' -> garden-roses.md rank 2 | top3 = ["garden-nursery.md", "garden-roses.md", "garden-shed.md"]
+  'graphics card' -> compute-tensor.md rank 2 | top3 = ["compute-render.md", "compute-tensor.md", "compute-lab.md"]
+  'supercomputer datacenter' -> compute-cluster.md rank 2 | top3 = ["compute-site.md", "compute-cluster.md", "compute-lab.md"]
+  'underwater ecosystems' -> ocean-coral.md rank 2 | top3 = ["ocean-science.md", "ocean-coral.md", "garden-shed.md"]
+  'moon gravity' -> ocean-tides.md rank 2 | top3 = ["ocean-moon.md", "ocean-tides.md", "music-hall.md"]
+mean reciprocal rank = 0.500
+test paraphrase_probe_dense_channel_recovers_zero_overlap_targets ... ok
+test probe_pairs_have_zero_token_overlap_by_construction ... ok
+  'guitar chords': lsa rank 2 | fallback rank 7
+  'singer vocals': lsa rank 2 | fallback rank 5
+  'fertilizer vegetables': lsa rank 2 | fallback rank >24 (miss)
+  'blooming flowers': lsa rank 2 | fallback rank >24 (miss)
+  'graphics card': lsa rank 2 | fallback rank >24 (miss)
+  'supercomputer datacenter': lsa rank 2 | fallback rank 10
+  'underwater ecosystems': lsa rank 2 | fallback rank 4
+  'moon gravity': lsa rank 2 | fallback rank 4
+lsa MRR = 0.500 | fallback MRR = 0.118 | fallback top-3 misses = 8/8
+test paraphrase_probe_discriminates_semantics_from_hashing_fallback ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
