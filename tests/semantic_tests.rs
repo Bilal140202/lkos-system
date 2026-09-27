@@ -98,13 +98,13 @@ fn lsa_trains_and_migrates_all_chunks() {
 }
 
 #[test]
-fn semantic_query_recovers_paraphrase_not_lexical() {
-    // The corpus above deliberately includes a topic where the query shares
-    // NO surface word with the target document ("machine learning" vs
-    // "neural networks" co-occur through shared structure in LSA space).
-    // We assert the honest, provable property: training must not degrade
-    // hybrid retrieval vs the cold-start baseline on lexical queries, and
-    // the dense channel must stay functional (hits carry Vector sources).
+fn semantic_training_preserves_lexical_queries_and_keeps_dense_channel_live() {
+    // Honest scope (issue #8): this test asserts two provable properties —
+    // (1) training + migration must not degrade hybrid retrieval on lexical
+    // queries, and (2) the dense channel stays live (Vector-only hits exist).
+    // It is NOT a paraphrase test: the query here shares surface tokens with
+    // the target documents. Zero-overlap paraphrase transfer is asserted by
+    // `tests/paraphrase_probe.rs` (dense channel, 8 pairs, fallback canary).
     let engine = Lkos::open_in_memory(sem_config()).expect("open");
     for (name, body) in semantic_corpus() {
         engine.ingest_bytes(&name, body.as_bytes()).expect("ingest");
@@ -124,6 +124,24 @@ fn semantic_query_recovers_paraphrase_not_lexical() {
             .iter()
             .any(|t| t.contains("query") || t.contains("database") || t.contains("Throughput")),
         "topical chunks rank top after training; got {top_texts:?}"
+    );
+
+    // Dense-channel liveness after training: a vector-only query must return
+    // hits matched by the Vector source (the trained LSA space is serving).
+    let dense = engine
+        .query(
+            QueryRequest::new("database query throughput")
+                .top_k(4)
+                .mode(lkos::RetrievalMode::VectorOnly),
+        )
+        .expect("dense query");
+    assert!(!dense.hits.is_empty(), "dense channel returned no hits");
+    assert!(
+        dense.hits.iter().any(|h| h
+            .matched_by
+            .iter()
+            .any(|m| matches!(m, lkos::MatchSource::Vector { .. }))),
+        "vector-only hits must cite the Vector source"
     );
 }
 

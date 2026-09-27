@@ -36,7 +36,7 @@ Maturity ladder (historical; current release = v0.10.0). Each version ships only
 
 ## v0.9 delivered
 
-- [x] Real semantic embeddings: LSA (PPMI + randomized SVD), deterministic,
+- [x] Real semantic embeddings: LSA (TF-IDF + randomized SVD), deterministic,
       corpus-trained; hashing fallback; per-chunk model lineage
 - [x] Incremental model migration: stale-chunk re-embed jobs, measured 22.9k chunks/s
 - [x] Retrieval 2.0: BM25 scores preserved, single-pass model-filtered dense scan,
@@ -47,7 +47,7 @@ Maturity ladder (historical; current release = v0.10.0). Each version ships only
 - [x] Graph 2.0: typed RELATES_TO_*, multi-hop BFS, centrality, graph-correct delete
 - [x] Document intelligence: DOCX/XLSX/PPTX/EPUB, proper HTML, bomb guards, optional PDF feature
 - [x] Jobs: atomic claim, backoff, dead-letter, cancellation, progress, worker count
-- [x] Evaluation: golden qrels + ablation harness + red-team suite; 86 tests total as of v0.10)
+- [x] Evaluation: golden qrels (semantic-off + semantic-on configs) + paraphrase-transfer probe + ablation harness + red-team suite; 90 tests total as of v0.10.1)
 
 ## v0.10 — Dense-channel scale (shipped)
 
@@ -63,7 +63,7 @@ Maturity ladder (historical; current release = v0.10.0). Each version ships only
 - [x] Two scale defects found and fixed: result-heap Ord inversion;
       insertion-order recall saturation on cluster-sequential corpora
 - [x] ANN test suite: exactness vs brute force, invalidation, policy paths,
-      filtered bypass (86 tests total)
+      filtered bypass (90 tests total)
 
 ## Next (ordered by whitepaper section 8)
 

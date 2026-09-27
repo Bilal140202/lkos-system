@@ -1,7 +1,7 @@
 # LKOS Implementation Report — v0.9.0 (historical; superseded by v0.10.0)
 
 > v0.10.0 delta (SECOND ASCENT sync note): deterministic in-process HNSW dense channel
-> (`src/ann.rs`, ADR-010), ANN crossover benchmark, ANN test suite; suite now **86 tests**
+> (`src/ann.rs`, ADR-010), ANN crossover benchmark, ANN test suite; suite now **86 tests** at v0.10 (**90 tests** at v0.10.1 — evaluation-integrity suite, issue #8)
 > (docs/TESTING.md). The tables below are the v0.9 record and are kept verbatim.
 
 ## What was built, in deltas over v0.1
@@ -31,7 +31,7 @@
 - Query p50: lexical 3.47 ms, dense 6.28 ms, hybrid+rerank 7.43 ms (p99 8.12 ms)
 - Evidence layer on 200-doc bench: 4,800 claims, 9,548 conflicts, 2,384 entities, 10,658 edges
 - Golden set (16 queries): hybrid MRR 1.000, nDCG@10 0.966, Recall@10 1.000; lexical MRR 0.938
-- Tests: 75/75 (v0.9); **86/86 at v0.10**; clippy: 0 warnings
+- Tests: 75/75 (v0.9); 86/86 at v0.10; **90/90 at v0.10.1**; clippy: 0 warnings
 
 ## What was removed / replaced
 

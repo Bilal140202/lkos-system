@@ -135,7 +135,7 @@ v0.1's benchmark generated probe queries that echoed the generating document's t
 
 ### 4.5 Test inventory
 
-86 tests: 23 end-to-end engine invariants (incl. 2 migration-resilience regressions), 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial tests, 2 golden-evaluation tests, 5 ANN integration tests (exactness, invalidation, policy paths), 14 module unit tests (LSA/JW/temporal/HNSW), 2 doc tests. All pass in release mode on this machine; CI runs the same suite on Linux/macOS/Windows.
+90 tests (v0.10.1; 86 at v0.10): 23 end-to-end engine invariants (incl. 2 migration-resilience regressions), 19 unit-quality tests, 9 semantic-layer tests, 12 adversarial tests, 3 golden-evaluation tests (semantic-off + semantic-on configurations), 3 paraphrase-transfer probes (zero-token-overlap, dense channel + fallback canary), 5 ANN integration tests (exactness, invalidation, policy paths), 14 module unit tests (LSA/JW/temporal/HNSW), 2 doc tests. All pass in release mode on this machine; CI runs the same suite on Linux/macOS/Windows.
 
 ---
 

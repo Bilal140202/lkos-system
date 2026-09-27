@@ -1,6 +1,6 @@
 # LKOS Final Audit — v0.9.0 (historical)
 
-> v0.10.0 sync note: test counts below reflect the v0.9 suite (77). The current suite is **86 tests**
+> v0.10.0 sync note: test counts below reflect the v0.9 suite (77). The current suite is **86 tests** at v0.10 (**90 tests** at v0.10.1)
 > (see docs/TESTING.md), and the ANN row is superseded: deterministic in-process HNSW **shipped** in
 > v0.10 (`src/ann.rs`, ADR-010, `benchmarks/results/ann-crossover-v0.10.0.txt`); its persistence and
 > incremental-update limits are tracked as issue #9. Version-stamp staleness across v0.9-era docs is

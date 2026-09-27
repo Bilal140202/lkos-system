@@ -200,45 +200,78 @@ pub fn train(
         }
     }
     // Orthonormalize Y's columns (modified Gram–Schmidt) → U_l (terms × l).
-    for col in 0..l {
+    //
+    // Spectral selection first (Halko, Martinsson & Tropp 2011, §1.4): the
+    // pre-orthonormalization column norms of the power-iterated sketch
+    // approximate the singular values, so the top-`dim` columns BY ENERGY
+    // must be retained before MGS. Selecting the first `dim` columns in
+    // sketch order instead truncates an ARBITRARY subspace (the sketch is a
+    // random Gaussian mix), which measurably scrambles cross-topic
+    // similarity — detected by the issue #8 paraphrase probe.
+    let mut col_energy: Vec<f32> = vec![0.0; l];
+    for c in 0..l {
+        let mut e = 0.0f32;
+        for ti in 0..n_terms {
+            let v = y[ti * l + c];
+            e += v * v;
+        }
+        col_energy[c] = e;
+    }
+    let mut order: Vec<usize> = (0..l).collect();
+    // Deterministic total order: energy desc, then column index asc.
+    order.sort_by(|a, b| {
+        col_energy[*b]
+            .partial_cmp(&col_energy[*a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.cmp(b))
+    });
+    order.truncate(dim);
+    let mut y_sel = vec![0.0f32; n_terms * dim];
+    for (new_c, &old_c) in order.iter().enumerate() {
+        for ti in 0..n_terms {
+            y_sel[ti * dim + new_c] = y[ti * l + old_c];
+        }
+    }
+    let mut y = y_sel;
+    for col in 0..dim {
         // normalize col
         let mut norm = 0.0f32;
         for ti in 0..n_terms {
-            norm += y[ti * l + col] * y[ti * l + col];
+            norm += y[ti * dim + col] * y[ti * dim + col];
         }
         let norm = norm.sqrt();
         if norm > f32::EPSILON {
             for ti in 0..n_terms {
-                y[ti * l + col] /= norm;
+                y[ti * dim + col] /= norm;
             }
         }
         // re-orthogonalize later columns against this one
-        for later in (col + 1)..l {
+        for later in (col + 1)..dim {
             let mut dot = 0.0f32;
             for ti in 0..n_terms {
-                dot += y[ti * l + col] * y[ti * l + later];
+                dot += y[ti * dim + col] * y[ti * dim + later];
             }
             for ti in 0..n_terms {
-                y[ti * l + later] -= dot * y[ti * l + col];
+                y[ti * dim + later] -= dot * y[ti * dim + col];
             }
         }
     }
 
-    // Term vectors = first `dim` orthonormal columns; fix signs deterministically.
+    // Term vectors = energy-selected orthonormal columns; fix signs deterministically.
     let mut term_vecs = vec![0.0f32; n_terms * dim];
     for d in 0..dim {
         // dominant sign: largest |component| of column d
         let mut best_abs = 0.0f32;
         let mut best_sign = 1.0f32;
         for ti in 0..n_terms {
-            let v = y[ti * l + d];
+            let v = y[ti * dim + d];
             if v.abs() > best_abs {
                 best_abs = v.abs();
                 best_sign = if v < 0.0 { -1.0 } else { 1.0 };
             }
         }
         for ti in 0..n_terms {
-            term_vecs[ti * dim + d] = y[ti * l + d] * best_sign;
+            term_vecs[ti * dim + d] = y[ti * dim + d] * best_sign;
         }
     }
 
